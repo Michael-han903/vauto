@@ -31,7 +31,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -463,26 +463,68 @@ class Runner:
             self._leave_mastery()
         return {"cars_done": self.stats["cars_done"], "phase": "spend"}
 
-    def _ensure_vehicle_tab(self) -> bool:
+    def _in_menu_now(self, frame: Optional[np.ndarray] = None) -> Tuple[bool, dict]:
+        """当前是否在「菜单系统」里（主菜单任意标签 / 我的车辆列表 / 精通页）。
+
+        实测：上车后会回到**主世界（自由驾驶）**，此时左上角没有菜单那块车名面板
+        → 必须先按 Esc 才出现主菜单。所以"在不在菜单里"是决定按什么键的关键。
+        """
+        frame = self.frame() if frame is None else frame
+        sc = {}
+        for nm in ("car_current_menu", "tile_mastery", "page_title_garage",
+                   "page_title_mastery", "hint_esc_back"):
+            d = self.s.dets.get(nm)
+            if d is None:
+                continue
+            score, _ = d.probe(frame)
+            sc[nm] = round(score, 3)
+        menu_det = self.s.dets.get("car_current_menu")
+        in_menu = bool(menu_det is not None
+                       and sc.get("car_current_menu", 0.0) >= menu_det.threshold)
+        in_menu = in_menu or sc.get("tile_mastery", 0.0) >= self.s.dets["tile_mastery"].threshold
+        in_menu = in_menu or sc.get("page_title_garage", 0.0) >= \
+            self.s.dets["page_title_garage"].threshold
+        return in_menu, sc
+
+    def _ensure_vehicle_tab(self, after_load: bool = False) -> bool:
         """确保停在主菜单「车辆」标签页（用 tile_mastery 的出现来验证）。
 
-        先用单帧 probe 快速判断（不动去抖状态）：已经在车辆页就**不点**那一下，
-        避免每次换车都白点一次标签。
+        顺序很重要（2026-10-02 用户实测确认 + 第二次真跑）：
+        **点「上车」之后游戏一定回到主世界（自由驾驶）**，必须先按 `Esc` 才会出现主菜单，
+        然后才能点「车辆」标签。所以 after_load 时 Esc 优先，而不是先点标签。
         """
-        det = self.s.dets["tile_mastery"]
-        for attempt in range(3):
+        det_tab = self.s.dets["tile_mastery"]
+        if after_load and not self.cfg.replay:
+            self.press("esc", "上车后回到主世界 → Esc 打开主菜单")
+            self.sleep(0.8)
+        for attempt in range(4):
             frame = self.frame()
-            score, _ = det.probe(frame)
-            if score >= det.threshold:
-                self.observe("tile_mastery", frame)          # 让去抖状态跟上
+            tab_score, _ = det_tab.probe(frame)
+            if tab_score >= det_tab.threshold:
+                self.observe("tile_mastery", frame)              # 让去抖状态跟上
+                self.log.event("vehicle_tab_ok", attempt=attempt, after_load=after_load)
                 return True
-            if attempt == 0:
-                print(f"  [B] 不在车辆页（tile_mastery {score:.3f}）→ 鼠标点「车辆」标签")
-                self.click_client(self.cfg.tab_vehicle_click, "车辆 tab")
+            in_menu, sc = self._in_menu_now(frame)
+            self.log.event("ensure_tab_probe", attempt=attempt, after_load=after_load,
+                           in_menu=in_menu, scores=sc)
+            if in_menu:
+                # 在菜单里但不在车辆页（别的标签页 / 我的车辆列表 / 精通页）
+                if sc.get("page_title_garage", 0.0) >= self.s.dets["page_title_garage"].threshold:
+                    self.press("esc", "从「我的车辆」列表退回")
+                    self.sleep(1.2)
+                else:
+                    print(f"  [B] 在菜单里但不在车辆页 → 点「车辆」标签  {sc}")
+                    self.click_client(self.cfg.tab_vehicle_click, "车辆 tab")
+                    if self._wait_for("tile_mastery", self.cfg.page_timeout) is not None:
+                        self.log.event("vehicle_tab_ok", attempt=attempt,
+                                       after_load=after_load, needed_action="click")
+                        return True
             else:
-                self.press("esc", "退回主菜单")
-            if self._wait_for("tile_mastery", self.cfg.page_timeout) is not None:
-                return True
+                # 主世界（自由驾驶）/ 加载中 → Esc 才会出现主菜单（这是 after_load 的正常路径）
+                print(f"  [B] 不在菜单里（主世界/加载中）→ 按 Esc 打开主菜单  {sc}")
+                self.press("esc", "自由驾驶 → 主菜单")
+                self.sleep(1.2)
+        self.log.event("vehicle_tab_fail", after_load=after_load)
         return False
 
     def change_car(self) -> bool:
@@ -556,34 +598,14 @@ class Runner:
             time.sleep(max(1.0, self.cfg.poll))
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.car_change_timeout, settle=1.0, scale=0.5, poll=0.3)
-            # 【2026-10-02 第二次真跑发现】上车后游戏**不保证**停在「车辆」标签页 ——
-            # 实测落回了「我的车辆」列表页，靠用户手动点「车辆」才继续（日志里那一格没有
-            # 程序的点击记录，说明程序当时只是在被动等）。所以这里必须主动切回去，
-            # 并把"当时在哪一页"写进日志（下次不用猜）。
-            frame = self.frame()
-            sc = {}
-            for nm in ("tile_mastery", "tile_change_car", "page_title_garage",
-                       "page_title_mastery"):
-                d = self.s.dets.get(nm)
-                if d is not None:
-                    score, _ = d.probe(frame)
-                    sc[nm] = round(score, 3)
-            in_tab = sc.get("tile_mastery", 0.0) >= self.s.dets["tile_mastery"].threshold
-            in_list = (sc.get("page_title_garage", 0.0)
-                       >= self.s.dets["page_title_garage"].threshold)
-            self.log.event("after_load_page", vehicle_tab=in_tab, garage_list=in_list, scores=sc)
-            print(f"  [B] 上车后所在页: "
-                  f"{'车辆页' if in_tab else ('我的车辆列表' if in_list else '未知')}"
-                  f"  {sc}")
-            if not in_tab:
-                if in_list:
-                    self.press("esc", "从「我的车辆」列表退回")
-                    self.sleep(self.cfg.poll)
-                if not self._ensure_vehicle_tab():
-                    shot = self._save_evidence(self.frame(), "after_load_no_vehicle_tab")
-                    print(f"  [!] 上车后回不到「车辆」页（证据: {shot}）")
-                    self.log.event("after_load_stuck", shot=shot)
-                    return False
+            # 【2026-10-02 用户实测确认】点「上车」后游戏**一定回到主世界（自由驾驶）**，
+            # 要按 Esc 才出现主菜单 → 所以这里是 after_load=True（Esc 优先），
+            # 之后还要点「车辆」标签才回到车辆页。判页分数写进日志（ensure_tab_probe）。
+            if not self._ensure_vehicle_tab(after_load=True):
+                shot = self._save_evidence(self.frame(), "after_load_no_vehicle_tab")
+                print(f"  [!] 上车后回不到「车辆」页（证据: {shot}）")
+                self.log.event("after_load_stuck", shot=shot)
+                return False
         return True
 
     def unlock_current_car(self) -> str:
