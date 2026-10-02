@@ -253,5 +253,34 @@ try:
 except Exception as _e:
     ck("车格/♥ 自检可运行", False, repr(_e))
 
+print("\n⑨ 当前车辆（列表最左侧那格）必须被跳过")
+# 2026-10-03 用户指出："新的 b 阶段逻辑怎么会去研究当前车辆呢？最左侧的车是当前车辆"
+try:
+    _IMG3 = r"C:\Users\lziha\AppData\Local\Hermes Agent CN Desktop\data\hermes-home\images\upload_20261003_003624_18.png"
+    _im3 = _cv2.imread(_IMG3) if _os.path.isfile(_IMG3) else None
+    if _im3 is None:
+        print("       跳过（找不到用户截图）")
+    else:
+        _cfg3 = RunConfig()
+        _cfg3.log_dir = tempfile.mkdtemp(prefix="vauto_selftest3_")
+        _r3 = Runner(build_offline_stack(), _cfg3)
+        _t3 = _r3._grid_tiles(_im3)
+        _c3 = _r3._cursor_cell(_im3, _t3)
+        ck("新截图：光标落在最左那格（= 当前车辆）", _c3 == (0, 0), f"光标格 {_c3}")
+        _t00 = [t for t in _t3 if (t[0], t[1]) == (0, 0)]
+        if _t00:
+            ck("当前车辆那格在标准 ♥ 位置读不出♥（所以要靠 seed 跳过）",
+               not _t00[0][6], f"score {_t00[0][7]:.3f} < 阈值 {_r3.s.dets['fav_heart'].threshold}")
+            _fp0 = _r3._title_crop(_im3, _t00[0][2], _t00[0][3], _t00[0][4], _t00[0][5])
+            _r3._seen_cars.append(_fp0)          # 模拟 change_car 的 seed
+            _cands = [t for t in _t3 if not t[6]
+                      and not _r3._fp_seen(_r3._title_crop(_im3, t[2], t[3], t[4], t[5]))]
+            ck("seed 之后当前车辆不再进候选", all((t[0], t[1]) != (0, 0) for t in _cands),
+               f"候选 {len(_cands)} 个：{[(t[0], t[1]) for t in _cands]}")
+        else:
+            ck("新截图能检出最左那格", False, "没检出 (0,0)")
+except Exception as _e:
+    ck("当前车辆跳过自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

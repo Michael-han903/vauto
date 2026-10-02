@@ -847,6 +847,24 @@ class Runner:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
                         poll=min(0.3, self.cfg.poll))
+        # 【2026-10-03 用户指出】列表**最左侧那格 = 当前车辆**（左上角名条就是它）：B 的目的是
+        # 换走，不该去"研究"它。而且它那格的图标排布不同（♥ 被挪到轮胎图标旁边），标准位置
+        # 读不出收藏状态（实测 score=0.776 < 0.90 → 会被误当成"待处理"）。
+        # 所以：把"进列表时光标所在的那台"直接记成已处理，一律跳过。
+        if not self._seen_cars:
+            _f0 = self.frame()
+            _t0 = self._grid_tiles(_f0)
+            _c0 = self._cursor_cell(_f0, _t0)
+            if _c0 is not None:
+                for (_r, _c, _bx, _by, _bw, _bh, _has, _sc) in _t0:
+                    if (_r, _c) == tuple(_c0):
+                        _fp0 = self._title_crop(_f0, _bx, _by, _bw, _bh)
+                        if _fp0 is not None:
+                            self._seen_cars.append(_fp0)
+                            self.log.event("car_fp_seed", cell=list(_c0),
+                                           note="当前车辆（最左侧/光标所在格）跳过")
+                            print(f"  [找] 光标在 ({_r},{_c}) = 当前车辆 → 记为已处理，跳过")
+                        break
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
             frame = self.frame()
