@@ -536,7 +536,9 @@ class Runner:
                     self.sleep(self.cfg.esc_dwell)
                 else:
                     print(f"  [B] 在菜单里但不在车辆页 → 点「车辆」标签  {sc}")
-                    self.click_client(self.cfg.tab_vehicle_click, "车辆 tab")
+                    if not self.click_match("tab_vehicle", frame=frame, note="车辆 tab"):
+                        # 兜底：标签匹配不上（例如它正被选中 → 黑底白字）时按坐标点
+                        self.click_client(self.cfg.tab_vehicle_click, "车辆 tab（坐标兜底）")
                     if self._wait_for("tile_mastery", self.cfg.page_timeout) is not None:
                         self.log.event("vehicle_tab_ok", attempt=attempt,
                                        after_load=after_load, needed_action="click")
