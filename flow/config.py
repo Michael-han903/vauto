@@ -51,6 +51,11 @@ class RunConfig:
     enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
     tab_creativity_click: Tuple[int, int] = (2390, 476)   # 【实测】创意中心标签中心（坐标兜底；正常走 tab_creativity 模板匹配）
     share_code: str = "161047605"                          # 【实测】挑战共享代码
+    dialog_cancel_key: str = "enter"                      # 关掉挡路弹窗按哪个键。
+                                                          # 【用户要求】不管高亮在哪一行都按回车；
+                                                          # 注意「为挑战评分?」的高亮行会变（实测一次在
+                                                          # 「取消」、一次在「点赞」），回车=确认高亮项。
+                                                          # 想改成"取消"语义（与高亮无关）就填 "esc"。
     code_clear_backspaces: int = 12                        # 输入前先退格清空（防拼成两遍代码）
     search_timeout: float = 30.0                           # 等搜索结果卡片的超时
     entry_load_timeout: float = 150.0                      # 进赛事后的加载超时（实测约 1 分钟）

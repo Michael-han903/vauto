@@ -167,10 +167,21 @@ try:
 except WindowUnavailable:
     ck("无效句柄应抛 WindowUnavailable", True)
 
-guard = FocusGuard(hwnd)
-ck("FocusGuard 前台放行", guard.is_active())
-ck("FocusGuard.require 前台不抛异常",
-   (lambda: (guard.require(), True)[1])())
+# ---- 前台焦点守卫：**不要假设"现在前台是谁"**（2026-10-02：用户在跑游戏时这条会失败）----
+# 改成显式取当前前台窗口 hwnd 做"放行"用例、取一个确定不在前台的窗口做"拒绝"用例。
+import win32gui as _wg
+_fg = _wg.GetForegroundWindow()
+ck("FocusGuard 前台放行", FocusGuard(_fg).is_active())
+ck("FocusGuard.require 前台不抛异常", (lambda: (FocusGuard(_fg).require(), True)[1])())
+_notfg = next((h for h, _t, _c in list_windows() if h != _fg), None)
+if _notfg is not None:
+    try:
+        FocusGuard(_notfg).require()
+        ck("FocusGuard 非前台应抛 NotForeground", False, f"hwnd={_notfg} 却没抛")
+    except NotForeground:
+        ck("FocusGuard 非前台应抛 NotForeground", True, f"hwnd={_notfg}")
+else:
+    ck("FocusGuard 非前台应抛 NotForeground", False, "找不到第二个窗口")
 try:
     FocusGuard(0xDEADBEEF).require()
     ck("FocusGuard 失效窗口应抛 NotForeground", False)

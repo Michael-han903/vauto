@@ -445,14 +445,16 @@ class Runner:
             self.log.event("retry_ack", ok=ok)
             print(f"  [A] 已离开结算界面: {ok}")
         else:
-            # 离开赛事后会弹「为挑战评分?」（默认「取消」，按一次回车就过）——见 docs 第 6.2 节
-            self.sleep(2.0)
-            self._dismiss_dialog_if_frozen("离开赛事后")
+            # 离开赛事后会弹「为挑战评分?」——**按回车**（用户明确要求：不管高亮在哪一行都按回车）。
+            # 给它 25 秒的耐心，会一路观察加载/过场。
+            self.sleep(1.5)
+            self.clear_blocking_dialog("离开赛事后")
         return "settled"
 
     # ---------------- B 阶段 ---------------- #
     def phase_spend(self, max_cars: int) -> dict:
         print(f"\n===== B 阶段：最多 {max_cars} 台车（换车 → 精通页 → Y+Enter） =====")
+        self.clear_blocking_dialog("B 阶段开始前", patience=12.0)   # 清掉上一阶段可能留下的弹窗
         self._ensure_vehicle_tab()
         for i in range(max_cars):
             self.s.stop.check()
@@ -721,34 +723,55 @@ class Runner:
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
 
-    def _dismiss_dialog_if_frozen(self, note: str = "离开赛事后") -> bool:
-        """兜底：如果画面**静止**在一个不是菜单的界面上，就按一次回车把它过掉。
+    def clear_blocking_dialog(self, note: str = "", patience: float = 25.0) -> bool:
+        """把挡路的「等待输入」界面清掉（默认按回车，键由 cfg.dialog_cancel_key 决定）。
 
-        为什么需要它（2026-10-02 用户实测）：跑完几轮挑战、按 Enter 返回时，会弹一个
-        「为挑战评分?」对话框，**默认选中的是「取消」**，按一次回车就过（不会误点赞）。
-        这个弹窗的高亮行会跟着鼠标悬停跑，靠模板匹配不一定稳，所以这里用与模板无关的
-        判据：**画面静止 = 有东西在等输入**。只在"离开赛事之后"这一个点调用，避免误按。
+        【用户要求】不管高亮在哪一行都按回车（2026-10-02）。
+        记录的观察：同一个「为挑战评分?」弹窗，两次截图的高亮行不同（一次在「取消」、
+        一次在「**点赞**」）。按回车 = 确认**当前高亮的那一项**，所以高亮在「点赞」时
+        回车会点赞。用户明确接受这个行为，因此默认用回车；要改成 Esc（取消，与高亮无关）
+        只需把 cfg.dialog_cancel_key 改成 "esc"。
+
+        做法：在 `patience` 秒内反复观察 ——
+        * 回到菜单了 → 完成；
+        * 评分弹窗判据命中 → 按键；
+        * 画面静止（1.2 秒内分块最大差 < 阈值）= 有东西在等输入 → 按键；
+        * 画面在动（加载/过场/自由驾驶）→ 继续观察，不动手。
+        每次动手都存证据图 logs/clear_dialog_*.png。
         """
         if self.cfg.replay:
             return False
-        frame = self.frame()
-        self.sleep(1.2)
-        frame2 = self.frame()
-        moving = (block_max_abs_diff(frame, frame2, blocks=self.cfg.nav_change_blocks)
-                  >= self.cfg.nav_change_threshold)
-        if moving:
-            self.log.event("dismiss_skip", note=note, reason="画面在动")
-            return False
-        hit = None
-        if "popup_rate_event" in self.s.dets:
-            hit = self.observe("popup_rate_event", frame2)
-        shot = self._save_evidence(frame2, "dismiss_dialog")
-        print(f"  [兜底] {note}：画面静止（评分弹窗判据{'命中' if hit else '未命中'}）"
-              f"→ 按一次回车（默认项是「取消」，不会误点赞）  证据: {shot}")
-        self.log.event("dismiss_dialog", note=note, rate_judge=bool(hit), shot=shot)
-        self.press(self.cfg.confirm_key, "关掉「为挑战评分?」等弹窗")
-        self.sleep(1.0)
-        return True
+        deadline = time.monotonic() + patience
+        acted = 0
+        while time.monotonic() < deadline:
+            in_menu, sc = self._in_menu_now()
+            if in_menu:
+                self.log.event("dialog_cleared", note=note, in_menu=True, acted=acted)
+                return True
+            f1 = self.frame()
+            self.sleep(1.2)
+            f2 = self.frame()
+            frozen = (block_max_abs_diff(f1, f2, blocks=self.cfg.nav_change_blocks)
+                      < self.cfg.nav_change_threshold)
+            hit = None
+            if "popup_rate_event" in self.s.dets:
+                hit = self.observe("popup_rate_event", f2)
+            if hit is None and not frozen:
+                self.sleep(0.5)
+                continue                     # 画面在动（加载/过场/自由驾驶）→ 不动手
+            acted += 1
+            shot = self._save_evidence(f2, f"clear_dialog{acted}")
+            print(f"  [兜底] {note or '挡路界面'}："
+                  f"{'评分弹窗判据命中' if hit else '画面静止'}"
+                  f" → 按 {self.cfg.dialog_cancel_key} 关掉  证据: {shot}")
+            self.log.event("clear_dialog", note=note, rate_judge=bool(hit),
+                           index=acted, shot=shot, key=self.cfg.dialog_cancel_key)
+            self.press(self.cfg.dialog_cancel_key, "关掉等待输入的界面（取消）")
+            self.sleep(1.5)
+            if acted >= 3:
+                break
+        self.log.event("dialog_cleared", note=note, in_menu=False, acted=acted)
+        return False
 
     # ---------------- 进赛事（自动开局）---------------- #
     def _enter_fail(self, step: str) -> bool:
