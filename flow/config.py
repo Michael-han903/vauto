@@ -58,6 +58,9 @@ class RunConfig:
     grid_origin: Tuple[int, int] = (800, 408)          # 「我的车辆」车格首格左上角（实机量）
     grid_pitch: Tuple[int, int] = (709, 522)           # 车格间距（实机量）—— 用于按格数走过去
     back_to_22b: bool = True            # B 阶段结束后自动把车换回 22B
+    cycles: int = 1                     # 主循环次数：A 跑 N 轮 → B 解锁到「技能点不足」→ 换回 22B → 再来
+    cars_cap: int = 40                  # --cars 0（解锁到不足）时的安全上限，防止无限换车
+    car_load_wait: float = 20.0         # 上车加载等待（实测 13~18s，留余量）
 
     enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
     tab_creativity_click: Tuple[int, int] = (2390, 476)   # 【实测】创意中心标签中心（坐标兜底；正常走 tab_creativity 模板匹配）

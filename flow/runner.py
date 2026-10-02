@@ -454,10 +454,14 @@ class Runner:
 
     # ---------------- B 阶段 ---------------- #
     def phase_spend(self, max_cars: int) -> dict:
-        print(f"\n===== B 阶段：最多 {max_cars} 台车（换车 → 精通页 → Y+Enter） =====")
+        # max_cars = 0 → 「一直解锁到技能点不足」（用户要求的口径）；用 cfg.cars_cap 当安全上限，
+        # 防止"所有车都解锁过了"时无限换车。
+        cap = max_cars if max_cars > 0 else self.cfg.cars_cap
+        title = f"最多 {cap} 台车" if max_cars > 0 else f"一直解锁到「技能点不足」（安全上限 {cap} 台）"
+        print(f"\n===== B 阶段：{title}（换车 → 精通页 → Y+Enter） =====")
         self.clear_blocking_dialog("B 阶段开始前", patience=12.0)   # 清掉上一阶段可能留下的弹窗
         self._ensure_vehicle_tab()
-        for i in range(max_cars):
+        for i in range(cap):
             self.s.stop.check()
             if not self._ensure_vehicle_tab():
                 print("  [!] 到不了「车辆」页，结束 B 阶段")
@@ -667,9 +671,17 @@ class Runner:
         if self._wait_for("page_title_mastery", self.cfg.page_timeout) is None:
             return "no_page"
         det = self.s.dets["hint_unlock_all"]
-        if self._wait_for("hint_unlock_all", 2.0) is None:
-            self.log.event("mastery_already")
-            return "already"                    # 没有 [Y] 解锁全部 → 本页早就做完了
+        hit = self._wait_for("hint_unlock_all", 3.0)
+        if hit is None:
+            sc, _m = self._probe_loc("hint_unlock_all", self.frame())
+            # 判据 = 底部「[Y] 解锁全部加成」提示在不在：本页没有可解锁项时游戏不显示它。
+            # 这条是**间接**证据，所以把分数一起记进日志 —— 事后能核查"是不是误判成 already"。
+            self.log.event("mastery_already",
+                           hint_score=(round(sc, 3) if sc == sc else None),
+                           threshold=det.threshold)
+            print(f"  [B] 没有「[Y] 解锁全部加成」提示"
+                  f"（{sc:.3f}/{det.threshold}）→ 本页已解锁过，跳过")
+            return "already"
         self.press(self.cfg.unlock_key, "解锁全部")
         self.press(self.cfg.confirm_key, "确认「解锁额外加成」")
         # 等结果：hint_unlock_all 消失 = 成功；popup_no_resource 出现 = 点数不足
@@ -710,23 +722,30 @@ class Runner:
                 max(0, int(round((hit.y - gy) / py))))
 
     def _enter_car_and_verify(self, where: str = "") -> bool:
-        """对**当前选中格**按 Enter（选择操作）→ Enter（上车）→ 等加载 → 复核是不是 22B。"""
+        """对**当前选中格**按 Enter（选择操作）→ Enter（上车）→ 等加载 → Esc → 复核是不是 22B。
+
+        【2026-10-02 实测的不变量】上车后游戏一定回到**主世界（自由驾驶）**，那里没有车名
+        面板 → 必须先按一次 Esc 才会出现主菜单。所以复核必须在 Esc **之后**做：上一版等的是
+        车库页的面板，等于永远等不到（那个 bug 还没在实机暴露，因为那次用户提前按了 F1）。
+        顺带把落点留成"主菜单"——循环里下一轮 A 要正是从这里进赛事。
+        """
         self.press("enter", "打开「选择操作」")
         self.sleep(0.9)
         self.press("enter", "选「上车」")
         # 【别当卡死】上车要加载 13~18s（实测），这期间没有任何判据命中是正常的。
-        det = self.s.dets.get("car_current_garage")
-        t0, seen = time.monotonic(), False
-        while time.monotonic() - t0 < self.cfg.car_change_timeout:
-            self.sleep(1.0)
-            sc, _m = self._probe_loc("car_current_garage", self.frame())
-            if det is not None and sc == sc and sc >= det.threshold:
-                seen = True
+        self.sleep(self.cfg.car_load_wait)
+        self.press("esc", "上车后回主菜单（自由驾驶 → 主菜单）")
+        self.sleep(1.5)
+        ok = False
+        for _ in range(6):          # 面板可能还要一点时间才画出来
+            if self.check_car_22b(log_fail=False):
+                ok = True
                 break
-        ok = bool(seen and self.check_car_22b())
-        self.log.event("set_22b_enter", where=where, panel=bool(seen), ok=ok)
-        print(f"  [换] {where} → " + ("成功，当前车就是 22B ✅" if ok else "面板回来了但**不是 22B**（点错格了）"))
-        return ok
+            self.sleep(1.0)
+        self.log.event("set_22b_enter", where=where, ok=bool(ok))
+        print(f"  [换] {where} → " + ("成功，当前车就是 22B ✅"
+                                    if ok else "Esc 回主菜单后复核：当前车**不是 22B**"))
+        return bool(ok)
 
     def set_car_22b(self) -> bool:
         """把当前车换回 1998 斯巴鲁 Impreza 22B-STI —— 跑 A 的前提。
@@ -1057,22 +1076,37 @@ class Runner:
                     print("[!] 当前车辆校验未通过：请手动把车换成 22B 再跑（或 --no-car-check）")
                     if not cfg.dry_run:
                         return {"stopped": "car_check_failed", **self.stats}
-            if cfg.a_enabled:
-                if cfg.enter_event:
-                    # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
-                    if not self.enter_event():
-                        print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
-                        if not cfg.dry_run:
-                            return {"stopped": "enter_event_failed", **self.stats}
-                self.phase_farm(cfg.rounds)
-            if cfg.b_enabled and cfg.phase != "farm":
-                self.phase_spend(cfg.cars)
-            # 【闭环的关键一步】B 之后把车换回 22B —— 否则下一轮 A 用的不是 22B
-            # （A 的节奏/判据都是按它标定的）。--phase spend 也会走到这里，方便单独试。
-            if cfg.b_enabled and cfg.back_to_22b and not cfg.dry_run:
-                if not self.set_car_22b():
-                    print("[!] 换回 22B 失败 → 停下（下次跑 A 之前请手动换车；证据见 logs/）")
-                    return {"stopped": "back_to_22b_failed", **self.stats}
+
+            # ---- 主循环：[进赛事 → 跑 N 轮] → [B 一直解锁到「技能点不足」] → [换回 22B] ----
+            # 用户口径（2026-10-02）："直到弹出提示说技能点不足再回去跑挑战"。
+            # --cycles 默认 1（一轮就退），>1 时自动"回 A 刷点 → 再花"，不用手动重跑命令。
+            cyc_total = max(1, int(cfg.cycles))
+            for cyc in range(1, cyc_total + 1):
+                if cyc > 1:
+                    print(f"\n########## 循环 {cyc}/{cyc_total}"
+                          f"（上一轮 B 已刷到「技能点不足」→ 回来再跑挑战）##########")
+                if cfg.a_enabled:
+                    if cfg.enter_event:
+                        # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
+                        if not self.enter_event():
+                            print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
+                            if not cfg.dry_run:
+                                return {"stopped": "enter_event_failed", **self.stats}
+                    self.phase_farm(cfg.rounds)
+                spent_before = self.stats.get("unlock_presses", 0)
+                if cfg.b_enabled and cfg.phase != "farm":
+                    self.phase_spend(cfg.cars)
+                # 【闭环的关键一步】B 之后把车换回 22B —— 否则下一轮 A 用的不是 22B
+                # （A 的节奏/判据都是按它标定的）。--phase spend 也会走到这里，方便单独试。
+                if cfg.b_enabled and cfg.back_to_22b and not cfg.dry_run:
+                    if not self.set_car_22b():
+                        print("[!] 换回 22B 失败 → 停下（下次跑 A 之前请手动换车；证据见 logs/）")
+                        return {"stopped": "back_to_22b_failed", **self.stats}
+                # 一整轮 B 一次都没解锁 → 大概率所有车的技能都点完了，再循环只是白刷挑战
+                if (cfg.b_enabled and cfg.phase != "farm" and cyc < cyc_total
+                        and self.stats.get("unlock_presses", 0) == spent_before):
+                    print(f"[=] 本轮 B 没解锁任何一页（所有车可能都已点完）→ 停在循环 {cyc}/{cyc_total}")
+                    break
         except AbortedByUser as exc:
             print(f"\n[急停] {exc}")
             # 写进日志：否则事后只剩一条 release_all 收尾，分不清"人停的"还是"自己停的"

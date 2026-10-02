@@ -40,7 +40,10 @@ def parse_args(argv=None):
     p.add_argument("--phase", choices=["farm", "spend", "both"], default="both",
                    help="farm=只打挑战；spend=只刷技能点；both=先 farm 再 spend")
     p.add_argument("--rounds", type=int, default=4, help="farm 阶段跑几轮挑战（默认 4）")
-    p.add_argument("--cars", type=int, default=6, help="spend 阶段最多处理几台车（默认 6）")
+    p.add_argument("--cars", type=int, default=6,
+                   help="spend 阶段最多处理几台车（默认 6；**0 = 一直解锁到「技能点不足」**）")
+    p.add_argument("--cycles", type=int, default=1,
+                   help="主循环次数（默认 1）：[进赛事→跑 N 轮] → [B 解锁到不足] → [换回 22B] → 再来一遍")
     p.add_argument("--live", action="store_true", help="★ 真的按键 ★（不加则只判不按）")
     p.add_argument("--hotkey", type=str, default="f1", help="急停键（默认 f1）")
     p.add_argument("--config", type=str, default="", help="从 JSON 读配置")
@@ -86,6 +89,7 @@ def main(argv=None) -> int:
     cfg.phase = args.phase
     cfg.rounds = args.rounds
     cfg.cars = args.cars
+    cfg.cycles = args.cycles
     cfg.hotkey = args.hotkey
     cfg.dry_run = not args.live
     cfg.require_car_22b = not args.no_car_check
