@@ -1,0 +1,29 @@
+{
+  "_note": "手工设定的阈值（calibrate.py 不产出的部分）。原因：这两个元素的正面在录屏里只以「淡入中间态」出现（实测 0.56~0.65），无法从素材测出正样本。阈值 = 静止截图（模板自匹配 1.000）+ 全量负样本实测最高分 + 余量，属于推定值，**首次在线 dry-run 必须复核**。",
+  "scale": 1.0,
+  "generated_at": "2026-10-02T20:0:00",
+  "templates": {
+    "menu_select_title": {
+      "file": "templates/menu_select_title.png",
+      "desc": "「选择操作」菜单的黄色标题条 —— 判定该菜单是否已弹出",
+      "threshold": 0.75,
+      "release_threshold": 0.69,
+      "roi": [1252, 734, 1336, 135],
+      "confirm_frames": 2,
+      "neg_max_measured": 0.446,
+      "neg_frames": 229,
+      "manual": true
+    },
+    "option_enter_car": {
+      "file": "templates/option_enter_car.png",
+      "desc": "「选择操作」菜单里默认高亮的「上车」行 —— 点它 = 上车；也可只作为菜单已弹出的二次确认",
+      "threshold": 0.85,
+      "release_threshold": 0.79,
+      "roi": [1252, 882, 1336, 116],
+      "confirm_frames": 1,
+      "neg_max_measured": 0.664,
+      "neg_frames": 229,
+      "manual": true
+    }
+  }
+}

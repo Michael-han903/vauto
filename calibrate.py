@@ -60,8 +60,13 @@ TEMPLATE_POSITIVE = {
     "hint_esc_retry":     ["challenge_result/*"],
     "panel_result":       ["challenge_result/*"],
     "hud_marker":         ["challenge_hud/*"],
-    "popup_no_resource":  ["popup_no_resource/*"],
-    "popup_confirm":      ["popup_no_resource/*"],
+    "popup_no_resource":  ["popup_no_resource/*", "popup_not_enough/*"],
+    "popup_confirm":      ["popup_no_resource/*", "popup_not_enough/*"],
+    # B 流程的菜单导航（可点击元素）
+    "tile_change_car":    ["menu_vehicle_tab/*"],
+    "tile_mastery":       ["menu_vehicle_tab/*"],
+    "menu_select_title":  ["menu_select_action/*"],
+    "option_enter_car":   ["menu_select_action/*"],
     "list_entry":         ["garage_list/*", "current_car_22b_garage/*"],
     "page_title_garage":  ["garage_list/*", "current_car_22b_garage/*"],
     "hint_esc_back":      MASTERY_SCENES + ["garage_list/*", "current_car_22b_menu/*",
@@ -78,14 +83,17 @@ TEMPLATE_POSITIVE = {
                            "node_inactive/*"],
     # 当前车辆识别（用于"跑 A 之前必须确认当前车是 1998 斯巴鲁 Impreza 22B-STI"）
     # 注意：正样本是"该元素在画面里可见"的帧，不是"当前车是 22B"的帧 —— 这两者不等价。
-    "car_current_menu":   ["current_car_22b_menu/*"],
+    "car_current_menu":   ["current_car_22b_menu/*", "menu_vehicle_tab/*"],
     "car_current_garage": ["current_car_22b_garage/*", "current_car_22b_strip/*",
                            "garage_list/*"],
 }
 
 # 自检脚本用的素材，不是业务模板，默认跳过
 SKIP_BY_DEFAULT = {"example_patch", "selftest_patch", "selftest_patch_half",
-                   "selftest_alpha", "selftest_debug", "自检_中文路径"}
+                   "selftest_alpha", "selftest_debug", "自检_中文路径",
+                   # 这两个元素的正面只在录屏里以"淡入中间态"出现（实测 0.56~0.65），
+                   # 无法从素材测出正样本 → 不参与自动标定，阈值写进 templates/manual_thresholds.json
+                   "menu_select_title", "option_enter_car"}
 
 ROI_MARGIN = 12.0            # 自动 ROI 的外扩像素（全分辨率）
 MIN_FRAMES = 3               # 正/负样本各至少这么多帧才给结论
