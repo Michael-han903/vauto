@@ -206,6 +206,10 @@ class Runner:
                                       "unlock_presses": 0, "no_points": 0, "errors": 0}
         self.ledger = self._load_ledger()
         self._nav_baseline: Optional[np.ndarray] = None
+        # B 阶段"已经弄过的车"指纹集合（选中格车名缩略图）—— 防止在同一两辆车之间打转。
+        # 详见 change_car()：2026-10-02 用户实测"来来回回就两辆车在那里换，而且太慢了"。
+        self._seen_cars: list = []
+        self._all_cars_seen = False        # 列表里已没有"没弄过的车"（B 可以收尾了）
         self._t0 = time.monotonic()
 
     # ---------------- 台账 ---------------- #
@@ -467,10 +471,14 @@ class Runner:
                 print("  [!] 到不了「车辆」页，结束 B 阶段")
                 break
             if not self.change_car():
-                # 记为错误（原来这里不计错误，跑挂了汇总里仍是 errors=0，会让人以为一切正常）
-                self.stats["errors"] += 1
-                self.log.event("change_car_failed", car_index=i + 1)
-                print("  [!] 换车失败，结束 B 阶段（详情看日志/证据图）")
+                if self._all_cars_seen:
+                    print("  [B] 列表里已经没有没弄过的车了 → 正常收尾（不算错误）")
+                    self.log.event("phase_spend_done", reason="all_cars_seen", cars=i)
+                else:
+                    # 记为错误（原来这里不计错误，跑挂了汇总里仍是 errors=0，会让人以为一切正常）
+                    self.stats["errors"] += 1
+                    self.log.event("change_car_failed", car_index=i + 1)
+                    print("  [!] 换车失败，结束 B 阶段（详情看日志/证据图）")
                 break
             print(f"  [B] 第 {i + 1} 台车：已上车")
             state = self.unlock_current_car()
@@ -577,11 +585,119 @@ class Runner:
         self.log.event("vehicle_tab_fail", after_load=after_load)
         return False
 
+    def _selected_tile_title(self, frame: np.ndarray):
+        """在「我的车辆」列表里找到**选中格**（黄色高亮框），把车名文字裁成指纹。
+
+        作用：不 OCR 也能判断"现在选中的是哪台车" —— 换车打转/重复就是靠它发现的。
+        2026-10-02 用户实测："来来回回就两辆车在那里换，而且太慢了"：原实现只"走一格就
+        上车"，选中重复车完全看不出来，每轮还白付 68 秒上车加载。
+        黄色框是唯一且明显的（实测最大轮廓面积 351544，第二名只有 71995）。
+        """
+        if frame is None or getattr(frame, "ndim", 0) < 3:
+            return None
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, (25, 150, 150), (45, 255, 255))
+            gy = int(self.cfg.grid_origin[1])
+            mask[:max(0, gy - 10), :] = 0                    # 只看车格区域
+            mask[:, int(frame.shape[1] * 0.94):] = 0         # 右边留白别算
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cnts:
+                return None
+            x, y, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+            # 只接受**完整**车格（实测 680x520）：滚动中间态里框会被裁掉一截，
+            # 那时裁出来的"车名"位置是歪的 —— 宁可不认（上层会等下一帧再取），也别认错车。
+            if not (600 <= bw <= 780 and 440 <= bh <= 600):
+                return None
+            tx, ty = x + 18, y + 8
+            tw, th = min(600, bw - 30), 92
+            if tw <= 0 or ty + th > frame.shape[0] or tx + tw > frame.shape[1]:
+                return None
+            tile = frame[ty:ty + th, tx:tx + tw]
+            # 车名区域的全分辨率灰度图（不是缩略图）：后面用"带对齐的差异"来比，
+            # 缩略图会把 1 像素错位放大成 10 的差异，两类就糊在一起了。
+            return cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            return None
+
+    def _fp_diff(self, a, b) -> float:
+        """两张车名裁图的差异（先在 ±fp_align_px 内找最佳对齐，再比）。
+
+        为什么必须对齐（2026-10-02 量出来的）：车名是文字，裁窗偏 1 像素就让"同一台车"的
+        像素差从 0 跳到 10，偏 6 像素到 53 —— 而"不同车"才 75。不对齐的话两类会糊在一起，
+        于是"这台车弄过没有"就会频繁判错。对齐之后：同车 ≈ 0~5，不同车 ≈ 40 以上。
+        """
+        if a is None or b is None:
+            return float("inf")
+        h = min(a.shape[0], b.shape[0])
+        w = min(a.shape[1], b.shape[1])
+        a, b = a[:h, :w], b[:h, :w]
+        pad = int(self.cfg.fp_align_px)
+        if h - 2 * pad < 8 or w - 2 * pad < 8:
+            pad = 0
+        core = b[pad:h - pad, pad:w - pad] if pad else b
+        if core.size == 0:
+            return float("inf")
+        try:
+            res = cv2.matchTemplate(a, core, cv2.TM_SQDIFF_NORMED)
+            return float(res.min()) * 255.0
+        except Exception:
+            return float("inf")
+
+    def _fp_seen(self, fp) -> bool:
+        """这台车是不是已经弄过（在已处理集合里）。"""
+        if fp is None:
+            return False
+        return any(self._fp_diff(fp, s) < self.cfg.fp_same_tol for s in self._seen_cars)
+
+    def _tile_fp(self, tries: int = 4):
+        """取选中格的指纹；如果框还在动/不完整（滚动中间态）就短等一下重取。"""
+        for _ in range(max(1, tries)):
+            fp = self._selected_tile_title(self.frame())
+            if fp is not None:
+                return fp
+            self.sleep(0.3)
+        return None
+
+    def _enter_car_now(self) -> bool:
+        """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
+        self.press(self.cfg.confirm_key, "打开「选择操作」")
+        if not self.cfg.replay:
+            menu = self._wait_for("menu_select_title", 4.0)
+            row = self._wait_for("option_enter_car", 1.0)
+            if menu is None or row is None:
+                # 这两个阈值是手工推定的，首次在线就靠这条日志定论
+                self.log.event("car_menu_threshold_check", menu_title=bool(menu),
+                               enter_row=bool(row),
+                               note="「选择操作」菜单判据不完整，仍继续（Enter 幂等）")
+        self.press(self.cfg.confirm_key, "选「上车」")
+        if not self.cfg.replay:
+            time.sleep(max(1.0, self.cfg.poll))
+            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                        timeout=self.cfg.car_change_timeout, settle=1.0, scale=0.5, poll=0.3)
+            # 【2026-10-02 用户实测确认】点「上车」后游戏**一定回到主世界（自由驾驶）**，
+            # 要按 Esc 才出现主菜单 → 所以这里是 after_load=True（Esc 优先），
+            # 之后还要点「车辆」标签才回到车辆页。判页分数写进日志（ensure_tab_probe）。
+            if not self._ensure_vehicle_tab(after_load=True):
+                shot = self._save_evidence(self.frame(), "after_load_no_vehicle_tab")
+                print(f"  [!] 上车后回不到「车辆」页（证据: {shot}）")
+                self.log.event("after_load_stuck", shot=shot)
+                return False
+        return True
+
     def change_car(self) -> bool:
-        """换到列表里的下一辆车：点「更换车辆」→ 走一格 → Enter → Enter。"""
+        """换到列表里**一台没弄过的**车：点「更换车辆」→ 走 → 上车 → 记录指纹。
+
+        【2026-10-02 用户实测教训】原来只"走一格就上车" → 在**同一两辆车之间来回换**而程序
+        毫无察觉（日志：连着 5 次 mastery_already，每次白付 68 秒加载，用户被逼按 F1）。
+        现在每走一步都用"选中格车名指纹"把关：
+        * 选中的是**没弄过**的车 → 上车，并把指纹记进已处理集合；
+        * 选中的是**弄过**的车 → 继续往前走（不白付加载时间）；
+        * 连续 `nav_repeat_limit` 次都是弄过的车 → 判定"列表里没新车了"→ 存证据停
+          （上层据此收尾，不当错误）。
+        """
         if not self.click_match("tile_change_car", note="点「更换车辆」"):
             return False
-        # 等列表出现（判据见下）
         # 等列表出现。**必须用页面标题判据**：左上角「当前车辆」名条在「车辆」标签页上也有，
         # 用它等于没判 —— 第一次真跑（2026-10-02 20:43）就是这么漏过去的。
         if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
@@ -623,40 +739,55 @@ class Runner:
 
         walker = GridWalker(press=_press_raw, car_changed=_changed,
                             max_fail=self.cfg.nav_max_fail, budget=self.cfg.nav_budget)
-        if not walker.step():
-            # 失败必须留证据：光标移不动 = 要么没进列表、要么判据不对 —— 有图才能定论
-            before_shot = self._save_evidence(self._nav_base_frame, "nav_stuck_before")
-            after_shot = self._save_evidence(self._nav_last_frame, "nav_stuck_after")
-            print(f"  [!] 走不动了（光标没动）证据: {before_shot} | {after_shot}")
-            self.log.event("nav_stuck", before=before_shot, after=after_shot,
-                           steps=getattr(walker, "steps", None))
-            return False
-        self.log.event("nav_step", steps=walker.steps)
-        # 选择操作 → 上车
-        self.press(self.cfg.confirm_key, "打开「选择操作」")
-        if not self.cfg.replay:
-            menu = self._wait_for("menu_select_title", 4.0)
-            row = self._wait_for("option_enter_car", 1.0)
-            if menu is None or row is None:
-                # 这两个阈值是手工推定的，首次在线就靠这条日志定论
-                self.log.event("car_menu_threshold_check", menu_title=bool(menu),
-                               enter_row=bool(row),
-                               note="「选择操作」菜单判据不完整，仍继续（Enter 幂等）")
-        self.press(self.cfg.confirm_key, "选「上车」")
-        # 等加载完成（车会重新载入，画面会明显变化再稳定）
-        if not self.cfg.replay:
-            time.sleep(max(1.0, self.cfg.poll))
-            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
-                        timeout=self.cfg.car_change_timeout, settle=1.0, scale=0.5, poll=0.3)
-            # 【2026-10-02 用户实测确认】点「上车」后游戏**一定回到主世界（自由驾驶）**，
-            # 要按 Esc 才出现主菜单 → 所以这里是 after_load=True（Esc 优先），
-            # 之后还要点「车辆」标签才回到车辆页。判页分数写进日志（ensure_tab_probe）。
-            if not self._ensure_vehicle_tab(after_load=True):
-                shot = self._save_evidence(self.frame(), "after_load_no_vehicle_tab")
-                print(f"  [!] 上车后回不到「车辆」页（证据: {shot}）")
-                self.log.event("after_load_stuck", shot=shot)
+
+        # 第一次进 B：把"当前这辆车"也记成弄过的 —— B 的目的就是换走，别原地重来一遍
+        if not self._seen_cars:
+            fp0 = self._selected_tile_title(self._nav_base_frame)
+            if fp0 is not None:
+                self._seen_cars.append(fp0)
+                self.log.event("car_fp_seed", note="当前车也算弄过（B 就是要把车换走）")
+
+        repeats = 0
+        for attempt in range(1, self.cfg.nav_budget + 1):
+            fp = self._tile_fp()
+            if fp is not None and self._fp_seen(fp):
+                repeats += 1
+                self.log.event("car_fp_repeat", attempt=attempt, repeats=repeats,
+                               seen=len(self._seen_cars))
+                print(f"  [换] 第 {attempt} 步：这台车弄过了（指纹重复 {repeats}）→ 继续往前")
+                if repeats >= self.cfg.nav_repeat_limit:
+                    shot = self._save_evidence(self.frame(), "car_fp_stuck")
+                    print(f"  [!] 连续 {repeats} 次都是弄过的车 → 列表里没新车了（证据 {shot}）")
+                    self.log.event("car_fp_stuck", repeats=repeats, shot=shot)
+                    self._all_cars_seen = True
+                    return False
+            else:
+                # fp is None（认不出选中格：离线回放 / 界面异常）→ 退化成原来的"走一格就上车"
+                self.log.event("car_fp_new", attempt=attempt, fp_ok=fp is not None)
+                print(f"  [换] 第 {attempt} 步："
+                      + ("选中的是没弄过的车 → 上车" if fp is not None
+                         else "认不出选中格 → 按原逻辑上车"))
+                if self._enter_car_now():
+                    if fp is not None:
+                        self._seen_cars.append(fp)
+                        self.log.event("car_fp_record", total=len(self._seen_cars))
+                    self.log.event("nav_step", steps=walker.steps)
+                    return True
                 return False
-        return True
+            # 往前走一格（走不动就留证据、报错）
+            if not walker.step():
+                before_shot = self._save_evidence(self._nav_base_frame, "nav_stuck_before")
+                after_shot = self._save_evidence(self._nav_last_frame, "nav_stuck_after")
+                print(f"  [!] 走不动了（光标没动）证据: {before_shot} | {after_shot}")
+                self.log.event("nav_stuck", before=before_shot, after=after_shot,
+                               steps=getattr(walker, "steps", None))
+                return False
+        # 走到预算尽头（没找到没弄过的车）
+        shot = self._save_evidence(self.frame(), "car_fp_budget")
+        print(f"  [!] 走了 {self.cfg.nav_budget} 步没找到没弄过的车（证据 {shot}）")
+        self.log.event("car_fp_budget", steps=self.cfg.nav_budget, shot=shot)
+        self._all_cars_seen = True
+        return False
 
     def unlock_current_car(self) -> str:
         """进精通页并解锁；返回 unlocked / already / no_points / no_page。"""

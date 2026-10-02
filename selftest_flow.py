@@ -170,5 +170,50 @@ _missing = sorted(_used - _known)
 ck("runner.py 用到的判据都装配了", not _missing,
    f"用到 {len(_used)} 个 | 装配 {len(_known)} 个" + (f" | 缺 {_missing}" if _missing else ""))
 
+print("\n⑦ 换车指纹：从「选中格车名」认出是哪台车（治『来来回回换同一两辆』）")
+# 2026-10-02 用户实测："你的换车逻辑有问题，来来回回就两辆车在那里换，而且太慢了"。
+# 原因：change_car() 只"走一格就上车"，选中的车弄过没有完全看不出来。
+try:
+    import glob as _glob
+    import tempfile
+    import cv2
+    import numpy as _np
+    from flow.config import RunConfig
+    from flow.runner import Runner, build_offline_stack
+
+    def _load_img(p):
+        return cv2.imdecode(_np.fromfile(str(p), dtype="uint8"), cv2.IMREAD_COLOR)
+
+    _cfg = RunConfig()
+    _cfg.log_dir = tempfile.mkdtemp(prefix="vauto_selftest_")
+    _r = Runner(build_offline_stack(), _cfg)
+    _p = sorted(_glob.glob(r"C:\Users\lziha\visual_auto_toolkit\golden_frames\current_car_22b_garage\*.png"))[0]
+    _im = _load_img(_p)
+    _fp = _r._selected_tile_title(_im)
+    ck("能在「我的车辆」里认出选中格的车名", _fp is not None,
+       f"指纹尺寸 {None if _fp is None else _fp.shape}")
+
+    if _fp is not None:
+        def _crop(dx=0, dy=0):
+            return cv2.cvtColor(_im[416 + dy:508 + dy, 818 + dx:1418 + dx], cv2.COLOR_BGR2GRAY)
+
+        _same = max(_r._fp_diff(_fp, _crop(dx=dx, dy=dy))
+                    for dx in (-4, -2, 0, 2, 4) for dy in (-2, 0, 2))
+        _others = {lab: _r._fp_diff(_fp, _crop(dx=dx, dy=dy)) for lab, dx, dy in
+                   (("124 SPIDER", 695, 0), ("695 BIPOSTO", 0, 522),
+                    ("FIAT 131", 695, 522), ("#6165 TRUCK", 1390, 0))}
+        print(f"       同车（±4 像素错位）最大差 {_same:.2f} | 不同车最小差 {min(_others.values()):.2f}"
+              f" | 阈值 {_cfg.fp_same_tol}")
+        ck("同一台车：错位 ±4 像素内仍判为同一台", _same < _cfg.fp_same_tol, f"{_same:.2f}")
+        ck("不同车：差异远大于阈值", min(_others.values()) > _cfg.fp_same_tol * 2,
+           f"最小 {min(_others.values()):.2f}（{min(_others, key=_others.get)}）")
+    # 录屏帧里也要认得出来（框必须完整才认，滚动中间态宁可不认）
+    _fs = sorted(_glob.glob(r"C:\Users\lziha\visual_auto_toolkit\golden_frames\garage_list\*.png"))
+    _ok = sum(1 for _f in _fs[:12]
+              if _r._selected_tile_title(_load_img(_f)) is not None)
+    ck("录屏车库帧里也认得出选中格", _ok >= 6, f"{_ok}/12 帧")
+except Exception as _e:
+    ck("换车指纹自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)
