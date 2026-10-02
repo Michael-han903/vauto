@@ -61,6 +61,7 @@ DETECTORS = (
     "panel_search_title",                                   # 进赛事：搜索面板已打开
     "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
     "car_tile_22b",                                         # 「我的车辆」里 22B 那一格（换回 22B 用）
+    "fav_heart",                                            # 车格右下角的 ♥ = 已加入收藏（B 选车用）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -210,6 +211,7 @@ class Runner:
         # 详见 change_car()：2026-10-02 用户实测"来来回回就两辆车在那里换，而且太慢了"。
         self._seen_cars: list = []
         self._all_cars_seen = False        # 列表里已没有"没弄过的车"（B 可以收尾了）
+        self._last_car_fp = None           # 刚处理的那台车的车名指纹（加收藏前核对用）
         self._t0 = time.monotonic()
 
     # ---------------- 台账 ---------------- #
@@ -482,6 +484,7 @@ class Runner:
                 break
             print(f"  [B] 第 {i + 1} 台车：已上车")
             state = self.unlock_current_car()
+            need_fav = state in ("unlocked", "already")
             if state == "unlocked":
                 self.stats["cars_done"] += 1
                 self.stats["unlock_presses"] += 1
@@ -498,6 +501,10 @@ class Runner:
                 self.stats["errors"] += 1
                 print(f"  [!] 解锁异常：{state}")
             self._leave_mastery()
+            if need_fav:
+                # 【2026-10-03 用户口径】点满（或本来就满）→ 回车 → ↓(添加至收藏) → 回车。
+                # 他手工漏标的车，这一步会补上 —— 下次就少一台要重看的车。
+                self.favorite_this_car()
         return {"cars_done": self.stats["cars_done"], "phase": "spend"}
 
     def _in_menu_now(self, frame: Optional[np.ndarray] = None) -> Tuple[bool, dict]:
@@ -659,6 +666,137 @@ class Runner:
             self.sleep(0.3)
         return None
 
+    # ---------------- 收藏(♥)驱动的选车（2026-10-03 用户定的新口径）---------------- #
+    def _title_crop(self, frame, x, y, w, h):
+        """按车格 bbox 裁车名文字（灰度），当车格指纹用。"""
+        tx, ty = int(x) + 18, int(y) + 8
+        tw, th = min(600, int(w) - 30), 92
+        if tw <= 0 or ty + th > frame.shape[0] or tx + tw > frame.shape[1]:
+            return None
+        return cv2.cvtColor(frame[ty:ty + th, tx:tx + tw], cv2.COLOR_BGR2GRAY)
+
+    def _grid_tiles(self, frame) -> list:
+        """检出「我的车辆」里**可见的每个车格**：[(row, col, x, y, w, h, has_heart, heart_score)]。
+
+        为什么不按"车格间距"推位置：2026-10-03 实测这张界面里间距**不固定**
+        （x=816/1506/2170/2834 → 690/664/664）→ 推位置会错。直接检白底车格矩形。
+        * 车格 = 青色背景上的白色圆角矩形（V>215 & S<45 的实心大块）
+        * ♥ = 车格内 (+560,+340) 起 110x80 区域内，与 fav_heart 模板的匹配分（实测有♥=1.000）
+        """
+        if frame is None or getattr(frame, "ndim", 0) < 3:
+            return []
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            S, V = hsv[:, :, 1], hsv[:, :, 2]
+            x0, y0, x1, y1 = self.cfg.grid_area
+            white = ((V > 215) & (S < 45)).astype(np.uint8) * 255
+            white[:max(0, int(self.cfg.grid_origin[1]) - 10), :] = 0
+            white[int(y1):, :] = 0
+            white[:, :int(x0)] = 0
+            white[:, int(x1):] = 0
+            white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+            cnts, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            boxes = []
+            for c in cnts:
+                bx, by, bw, bh = cv2.boundingRect(c)
+                if not (self.cfg.tile_w_min <= bw <= self.cfg.tile_w_max
+                        and self.cfg.tile_h_min <= bh <= self.cfg.tile_h_max):
+                    continue
+                if cv2.contourArea(c) < 0.75 * bw * bh:
+                    continue
+                boxes.append((bx, by, bw, bh))
+            boxes.sort(key=lambda t: (t[1], t[0]))
+            rows = []
+            for t in boxes:
+                if rows and abs(t[1] - rows[-1][0][1]) < 60:
+                    rows[-1].append(t)
+                else:
+                    rows.append([t])
+            det = self.s.dets.get("fav_heart")
+            thr = float(getattr(det, "threshold", 0.85) or 0.85)
+            ox, oy = self.cfg.heart_off
+            rw, rh = self.cfg.heart_roi
+            out = []
+            for r, row in enumerate(rows):
+                for c, (bx, by, bw, bh) in enumerate(sorted(row)):
+                    roi = frame[by + oy:by + oy + rh, bx + ox:bx + ox + rw]
+                    sc = float("nan")
+                    if det is not None and roi.size:
+                        try:
+                            hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
+                            if hit is not None:
+                                sc = float(getattr(hit, "score", float("nan")))
+                                if getattr(self.s.matcher, "ascending", False):
+                                    sc = 1.0 - sc
+                        except Exception:
+                            sc = float("nan")
+                    out.append((r, c, bx, by, bw, bh, bool(sc == sc and sc >= thr), sc))
+            return out
+        except Exception:
+            return []
+
+    def _cursor_cell(self, frame, tiles):
+        """光标（黄色高亮框）现在在哪个车格 → (row, col)；认不出返回 None。"""
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv, (25, 150, 150), (45, 255, 255))
+            mask[:max(0, int(self.cfg.grid_origin[1]) - 10), :] = 0
+            mask[:, int(frame.shape[1] * 0.94):] = 0
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cnts:
+                return None
+            x, y, w, h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+            if not (self.cfg.tile_w_min - 60 <= w <= self.cfg.tile_w_max + 60
+                    and self.cfg.tile_h_min - 60 <= h <= self.cfg.tile_h_max + 60):
+                return None
+            cx, cy = x + w / 2.0, y + h / 2.0
+            best = None
+            for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                d = abs(cx - (bx + bw / 2.0)) + abs(cy - (by + bh / 2.0))
+                if best is None or d < best[0]:
+                    best = (d, r, c)
+            return (best[1], best[2]) if best and best[0] < 120 else None
+        except Exception:
+            return None
+
+    def _walk_to_tile(self, target, tiles_hint=None) -> bool:
+        """用方向键把光标走到目标车格；**每按一次都重新看黄框在哪**复核（闭环，不信假设）。
+
+        键语义（用户实测）：↓ 在列内往下、到底跳下一列；→ 换下一列。
+        这里不依赖语义假设：先试 ↓、不行再试 →，只要"离目标更近"就继续。
+        """
+        for _ in range(self.cfg.grid_walk_max):
+            self.s.stop.check()
+            frame = self.frame()
+            tiles = tiles_hint if tiles_hint is not None else self._grid_tiles(frame)
+            tiles_hint = None
+            cur = self._cursor_cell(frame, tiles)
+            if cur is None:
+                self.log.event("grid_walk_fail", why="cursor_unknown", target=list(target))
+                return False
+            if cur == tuple(target):
+                return True
+            moved = False
+            for key in self.cfg.grid_walk_keys:
+                self.press(key, f"走到目标车格 {tuple(target)}（现在 {cur}）")
+                self.sleep(self.cfg.grid_walk_dwell)
+                f2 = self.frame()
+                t2 = self._grid_tiles(f2)
+                new = self._cursor_cell(f2, t2)
+                if new is not None and new != cur:
+                    d_old = abs(cur[0] - target[0]) + abs(cur[1] - target[1])
+                    d_new = abs(new[0] - target[0]) + abs(new[1] - target[1])
+                    if d_new < d_old:
+                        moved = True
+                        break
+            if not moved:
+                shot = self._save_evidence(self.frame(), "grid_walk_stuck")
+                print(f"  [!] 走不到目标车格 {tuple(target)}（现在 {cur}）证据 {shot}")
+                self.log.event("grid_walk_fail", why="no_progress", cur=list(cur),
+                               target=list(target), shot=shot)
+                return False
+        return False
+
     def _enter_car_now(self) -> bool:
         """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
         self.press(self.cfg.confirm_key, "打开「选择操作」")
@@ -685,16 +823,163 @@ class Runner:
                 return False
         return True
 
+    # ---------------- B：♥ 驱动的换车（2026-10-03 用户定的口径）---------------- #
     def change_car(self) -> bool:
-        """换到列表里**一台没弄过的**车：点「更换车辆」→ 走 → 上车 → 记录指纹。
+        """换到列表里**一台还没收藏（♥）的车**：点「更换车辆」→ 找没 ♥ 的车格 → 走过去 → 上车。
 
-        【2026-10-02 用户实测教训】原来只"走一格就上车" → 在**同一两辆车之间来回换**而程序
-        毫无察觉（日志：连着 5 次 mastery_already，每次白付 68 秒加载，用户被逼按 F1）。
-        现在每走一步都用"选中格车名指纹"把关：
-        * 选中的是**没弄过**的车 → 上车，并把指纹记进已处理集合；
-        * 选中的是**弄过**的车 → 继续往前走（不白付加载时间）；
-        * 连续 `nav_repeat_limit` 次都是弄过的车 → 判定"列表里没新车了"→ 存证据停
-          （上层据此收尾，不当错误）。
+        用户口径（2026-10-03 原话）："我会把每一辆点满了技术点的车辆加入收藏，你可以在车辆
+        列表里面看没有加入收藏的车辆然后去点技术点……每一辆车右下角的爱心就是已经加入了
+        收藏的意思"。所以：
+        * **没 ♥ = 还没点满，需要处理** —— 现成的、跨会话持久的目标清单（比之前的指纹集合可靠）；
+        * 处理完一台就按 回车 → ↓(添加至收藏) → 回车 把它标记掉（见 favorite_this_car）。
+        这一屏全都有 ♥ 就按 → 往右滚一列继续找；滚不动了 = 没有待处理的车了。
+        """
+        if not self.click_match("tile_change_car", note="点「更换车辆」"):
+            return False
+        # 等列表出现。**必须用页面标题判据**：左上角「当前车辆」名条在「车辆」标签页上也有，
+        # 用它等于没判 —— 第一次真跑（2026-10-02 20:43）就是这么漏过去的。
+        if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
+            shot = self._save_evidence(self.frame(), "nav_list_not_opened")
+            print(f"  [!] 「更换车辆」列表没出现（证据: {shot}）")
+            self.log.event("nav_list_missing", shot=shot)
+            return False
+        if not self.cfg.replay:
+            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                        timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
+                        poll=min(0.3, self.cfg.poll))
+        for attempt in range(1, self.cfg.nav_budget + 1):
+            self.s.stop.check()
+            frame = self.frame()
+            tiles = self._grid_tiles(frame)
+            if not tiles:
+                shot = self._save_evidence(frame, "grid_no_tiles")
+                print(f"  [!] 认不出车格（证据 {shot}）→ 结束 B")
+                self.log.event("grid_no_tiles", shot=shot)
+                return False
+            cur = self._cursor_cell(frame, tiles)
+            # 【两道校验并用，缺一不可】2026-10-03 用户补充：“有的车我点满了也没有加入收藏，
+            # 所以你不能删掉旧的校验机制” —— 所以 ♥ 只是“他标记过的车”，不是全集：
+            # 候选 = 「没 ♥」**且**「本次会话还没处理过」（指纹集合，旧机制）。
+            todo = []
+            skipped = 0
+            for t in tiles:
+                if t[6]:                        # 有 ♥ → 用户标过"已点满"
+                    continue
+                fp = self._title_crop(frame, t[2], t[3], t[4], t[5])
+                if fp is not None and self._fp_seen(fp):
+                    skipped += 1                # 没♥但指纹说这次已经弄过 → 跳过（省掉 70 秒）
+                    continue
+                todo.append((t, fp))
+            todo.sort(key=lambda p: (0 if cur is None
+                                     else abs(p[0][0] - cur[0]) + abs(p[0][1] - cur[1])))
+            hearts = [t[7] for t in tiles if t[7] == t[7]]
+            no_heart = sum(1 for t in tiles if not t[6])
+            self.log.event("grid_scan", attempt=attempt, tiles=len(tiles), todo=len(todo),
+                           no_heart=no_heart, fp_skipped=skipped, seen=len(self._seen_cars),
+                           cursor=None if cur is None else list(cur),
+                           heart_min=round(min(hearts), 3) if hearts else None,
+                           heart_max=round(max(hearts), 3) if hearts else None)
+            if todo:
+                (r, c, bx, by, bw, bh, has, sc), fp = todo[0]
+                print(f"  [找] 第 {attempt} 屏：{len(tiles)} 格 / 待处理 {len(todo)}"
+                      f"（没♥ {no_heart} − 本次已弄过 {skipped}）→ 去第{r}行第{c}列（♥ 分 {sc:.3f}）")
+                shot = self._save_evidence(frame, f"target_r{r}c{c}")
+                self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
+                               cand=len(todo), fp_ok=fp is not None, shot=shot)
+                if not self._walk_to_tile((r, c), tiles_hint=tiles):
+                    return False
+                self._last_car_fp = fp if fp is not None else self._title_crop(frame, bx, by, bw, bh)
+                print("  [换] 走到目标车 → 上车")
+                if not self._enter_car_now():
+                    return False
+                if self._last_car_fp is not None:   # 记进“本次会话已处理”（旧校验机制，保留）
+                    self._seen_cars.append(self._last_car_fp)
+                    self.log.event("car_fp_record", total=len(self._seen_cars))
+                return True
+            # 这一屏都收藏过了 → 往右滚一列，把后面的车拉进来
+            print(f"  [找] 第 {attempt} 屏：{len(tiles)} 格全都有 ♥ → 往右滚一列")
+            before = self._list_roi(frame)
+            self.press("right", "右移一列（找没收藏的车）")
+            self.sleep(self.cfg.grid_walk_dwell)
+            after = self._list_roi(self.frame())
+            diff = float(block_max_abs_diff(before, after, blocks=self.cfg.nav_change_blocks))
+            self.log.event("grid_advance", attempt=attempt, diff=round(diff, 1))
+            if diff < self.cfg.nav_change_threshold:
+                shot = self._save_evidence(self.frame(), "grid_end")
+                print(f"  [B] 列表滚不动了（分块差 {diff:.1f}）→ 没有待处理的车了（证据 {shot}）")
+                self.log.event("grid_end", diff=round(diff, 1), shot=shot)
+                self._all_cars_seen = True
+                return False
+        shot = self._save_evidence(self.frame(), "grid_budget")
+        print(f"  [!] 翻了 {self.cfg.nav_budget} 屏都没找到没收藏的车（证据 {shot}）")
+        self.log.event("grid_budget", shot=shot)
+        self._all_cars_seen = True
+        return False
+
+    def favorite_this_car(self) -> bool:
+        """把**刚点满的那台车**加入收藏：回车 → ↓(添加至收藏) → 回车（用户定的标记法）。
+
+        为什么做：用户用收藏当"这台已点满"的标记 → 下次（甚至下次开游戏）只看"没 ♥ 的车"，
+        程序不需要任何"上次弄到哪"的记忆。
+        加之前用**车名指纹**核对光标确实在刚处理的那台车上 —— 绝不点错车。
+        """
+        if self.cfg.replay:
+            return True
+        if not self._ensure_vehicle_tab():
+            return False
+        if not self.click_match("tile_change_car", note="点「更换车辆」（准备加收藏）"):
+            return False
+        if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
+            print("  [!] 加收藏前：列表没打开")
+            return False
+        self.sleep(0.8)
+        target = None
+        if self._last_car_fp is not None:
+            for _ in range(3):
+                frame = self.frame()
+                for (r, c, bx, by, bw, bh, has, sc) in self._grid_tiles(frame):
+                    if has:                     # 已经有 ♥ → 不是它
+                        continue
+                    fp = self._title_crop(frame, bx, by, bw, bh)
+                    if fp is not None and self._fp_diff(fp, self._last_car_fp) < self.cfg.fp_same_tol:
+                        target = (r, c)
+                        break
+                if target:
+                    break
+                self.sleep(0.4)
+        if target is None:
+            shot = self._save_evidence(self.frame(), "favorite_no_target")
+            print(f"  [!] 认不出刚处理的那台车 → 不加收藏（宁可不做也不点错车）证据 {shot}")
+            self.log.event("favorite_no_target", shot=shot)
+            return False
+        if not self._walk_to_tile(target):
+            return False
+        self.press(self.cfg.confirm_key, "打开「选择操作」（准备加收藏）")
+        self.sleep(0.8)
+        self.press(self.cfg.fav_key, "↓ 选「添加至收藏」")
+        self.sleep(0.4)
+        self.press(self.cfg.confirm_key, "确认「添加至收藏」")
+        self.sleep(1.0)
+        ok = False                        # 复核：这一格现在应该有 ♥ 了（收藏成功的硬证据）
+        for _ in range(3):
+            frame = self.frame()
+            for (r, c, bx, by, bw, bh, has, sc) in self._grid_tiles(frame):
+                if (r, c) == tuple(target) and has:
+                    ok = True
+                    break
+            if ok:
+                break
+            self.sleep(0.4)
+        self.log.event("favorite_done", cell=list(target), ok=bool(ok))
+        print("  [B] 加入收藏 " + ("成功 ✅（已看到 ♥）" if ok
+                                 else "没确认到 ♥（下次还会被当成待处理）"))
+        return bool(ok)
+
+    def change_car_legacy(self) -> bool:
+        """【已停用，保留作回退】指纹驱动的换车：走一步 → 取指纹 → 弄过就继续走。
+
+        2026-10-03 用户改用「收藏(♥)」当已完成标记后，本方法被新的 change_car 取代。
+        新的实机验证通过后可以删掉这个。
         """
         if not self.click_match("tile_change_car", note="点「更换车辆」"):
             return False

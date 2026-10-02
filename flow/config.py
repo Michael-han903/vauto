@@ -84,6 +84,18 @@ class RunConfig:
     # 【2026-10-02 用户实测】"来来回回就两辆车在那里换" → 每走一步都用"选中格车名指纹"
     # 判断这台车弄过没有：弄过就继续走，不走重复的车（省下每次 68 秒的上车加载）。
     nav_repeat_limit: int = 6           # 连续这么多次都撞上"弄过的车" → 判定列表里没新车了
+    # ---- ♥（收藏）驱动选车（2026-10-03 用户口径：点满的车他会加收藏，没♥=待处理）----
+    fav_key: str = "down"               # 「选择操作」里「添加至收藏」是第 2 项 → 回车后按一下 ↓
+    grid_area: Tuple[int, int, int, int] = (760, 400, 3800, 1900)   # 车格区域（左,上,右,下）
+    tile_w_min: int = 560               # 车格宽度范围（实测 636~648，留余量）
+    tile_w_max: int = 800
+    tile_h_min: int = 400               # 车格高度范围（实测 468~488）
+    tile_h_max: int = 600
+    heart_off: Tuple[int, int] = (560, 340)   # 车格内 ♥ 搜索区偏移（实测 ♥ 在 +(606,378)）
+    heart_roi: Tuple[int, int] = (110, 80)    # ♥ 搜索区大小
+    grid_walk_max: int = 30             # 走到目标车格最多按几次方向键
+    grid_walk_dwell: float = 0.45       # 每次方向键后的等待（够黄框重画）
+    grid_walk_keys: Tuple[str, ...] = ("down", "right")   # 试键顺序（闭环验证，不依赖语义假设）
     fp_same_tol: float = 20.0           # 车名指纹差异 < 此值 = 同一台车（对齐后同车≈0~5、不同车≈40+）
     fp_align_px: int = 4                # 比对指纹前在 ±这么多像素内找最佳对齐（文字对错位极敏感）
     esc_dwell: float = 2.0             # 按 Esc 之后等画面切过去的时间（实测 ~1.5 s 才有变化）
@@ -122,6 +134,10 @@ class RunConfig:
         self.nav_change_blocks = tuple(int(v) for v in self.nav_change_blocks)
         self.grid_origin = tuple(int(v) for v in self.grid_origin)
         self.grid_pitch = tuple(int(v) for v in self.grid_pitch)
+        self.grid_area = tuple(int(v) for v in self.grid_area)
+        self.heart_off = tuple(int(v) for v in self.heart_off)
+        self.heart_roi = tuple(int(v) for v in self.heart_roi)
+        self.grid_walk_keys = tuple(str(v) for v in self.grid_walk_keys)
         if self.phase not in ("farm", "spend", "both"):
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
         if self.poll <= 0:

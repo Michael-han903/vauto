@@ -215,5 +215,43 @@ try:
 except Exception as _e:
     ck("换车指纹自检可运行", False, repr(_e))
 
+print("\n⑧ 车格/♥ 检测：用用户实机截图验证（B 段选车靠它）")
+try:
+    import os as _os
+    import cv2 as _cv2
+    _IMG = r"C:\Users\lziha\AppData\Local\Hermes Agent CN Desktop\data\hermes-home\images\upload_20261003_002623_16.png"
+    _im2 = _cv2.imread(_IMG) if _os.path.isfile(_IMG) else None
+    if _im2 is None:
+        print("       跳过（找不到用户截图）")
+    else:
+        _cfg2 = RunConfig()
+        _cfg2.log_dir = tempfile.mkdtemp(prefix="vauto_selftest2_")
+        _r2 = Runner(build_offline_stack(), _cfg2)
+        _tiles = _r2._grid_tiles(_im2)
+        ck("能从实机截图里检出车格", len(_tiles) >= 8, f"{len(_tiles)} 个车格")
+        if _tiles:
+            _ws = [t[4] for t in _tiles]
+            _hs = [t[5] for t in _tiles]
+            print(f"       车格尺寸 {min(_ws)}~{max(_ws)} x {min(_hs)}~{max(_hs)}"
+                  f"（实测基准 636~648 x 468~488）")
+            _scores = [t[7] for t in _tiles if t[7] == t[7]]
+            _nheart = sum(1 for t in _tiles if t[6])
+            print(f"       ♥ 检出 {_nheart}/{len(_tiles)} 格"
+                  f"（这张图上用户说都收藏过了）；♥ 分数 {min(_scores):.3f}~{max(_scores):.3f}")
+            ck("该图（用户已全部收藏）每格都判为有 ♥", _nheart == len(_tiles),
+               f"{_nheart}/{len(_tiles)}")
+            # 反向：车格中部（没有♥的地方）不该被判成♥
+            _t0 = _tiles[0]
+            _mid = _im2[_t0[3] + 150:_t0[3] + 230, _t0[2] + 200:_t0[2] + 310]
+            _det = _r2.s.dets["fav_heart"]
+            _h = _r2.s.matcher.match_best(_mid, _det.template, threshold=-1.0)
+            _midscore = float(getattr(_h, "score", float("nan"))) if _h else float("nan")
+            ck("没有♥的区域不会被判成有♥", not (_midscore == _midscore and _midscore >= _det.threshold),
+               f"车格中部得分 {_midscore:.3f} < 阈值 {_det.threshold}")
+            _cur = _r2._cursor_cell(_im2, _tiles)
+            ck("能认出光标在哪个车格", _cur == (0, 0), f"光标格 {_cur}（图上黄框在第 1 格）")
+except Exception as _e:
+    ck("车格/♥ 自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)
