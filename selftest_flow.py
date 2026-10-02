@@ -316,11 +316,14 @@ try:
     def _cell_box(r, c):
         return (816 + c * (_W + _GAP), 424 + r * (_H + _GAP), _W, _H)
 
-    def _sim(cur, semantics):
+    def _sim(cur, semantics, no_heart=(2, 1)):
         """把 Runner 的"看画面"接口换成合成网格；press 按给定的键语义推进光标。"""
         st = {"cur": cur, "presses": []}
-        _r6._grid_tiles = lambda frame, _st=st: [(r, c, *_cell_box(r, c), False, 0.2)
-                                                for r in range(_ROWS) for c in range(_COLS)]
+        # 模拟"只有 no_heart 那格没♥"（其余都有♥）—— 走路必须靠"光标压着的格是不是待处理"
+        # 来判断到没到，而不是靠指纹（同款同名车指纹一样，靠指纹会来回横跳）。
+        _r6._grid_tiles = lambda frame, _st=st, _nh=no_heart: [
+            (r, c, *_cell_box(r, c), (r, c) != _nh, 0.9 if (r, c) != _nh else 0.2)
+            for r in range(_ROWS) for c in range(_COLS)]
         _r6._cursor_box = lambda frame, tiles=None, _st=st: _cell_box(*_st["cur"])
         _r6._title_crop = lambda frame, x, y, w, h: (
             f"cell_{(y - 424) // (_H + _GAP)}_{(x - 816) // (_W + _GAP)}")
@@ -350,20 +353,20 @@ try:
                 st["cur"] = (r - 1, c)
         # right / left：实测不动（这里保持不动，正是要测"别再依赖它们"）
 
-    _s1 = _sim((0, 0), _col_major)
-    _ok1 = _r6._walk_to_tile("cell_2_1")
+    _s1 = _sim((0, 0), _col_major, no_heart=(2, 1))
+    _ok1 = _r6._walk_to_tile()
     ck("走路能走到 (2,1)（= 用户那次失败的坐标）", _ok1 and _s1["cur"] == (2, 1),
        f"cur={_s1['cur']} 按键 {_s1['presses']}")
     ck("走路只用 ↓/↑（实测 →/← 不动光标）",
        bool(_s1["presses"]) and all(k in ("down", "up") for k in _s1["presses"]),
        f"按键序列 {_s1['presses'][:6]}")
 
-    _s2 = _sim((0, 0), _col_major)
-    _ok2 = _r6._walk_to_tile("cell_0_3")
+    _s2 = _sim((0, 0), _col_major, no_heart=(0, 3))
+    _ok2 = _r6._walk_to_tile()
     ck("同行的 (0,3) 也能走到", _ok2 and _s2["cur"] == (0, 3), f"cur={_s2['cur']} 按键 {_s2['presses']}")
 
-    _s3 = _sim((2, 3), _col_major)
-    _ok3 = _r6._walk_to_tile("cell_0_1")
+    _s3 = _sim((2, 3), _col_major, no_heart=(0, 1))
+    _ok3 = _r6._walk_to_tile()
     ck("左上方的 (0,1) 也能走到", _ok3 and _s3["cur"] == (0, 1), f"cur={_s3['cur']} 按键 {_s3['presses']}")
 except Exception as _e:
     ck("走路模拟自检可运行", False, repr(_e))

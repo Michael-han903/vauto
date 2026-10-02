@@ -844,41 +844,30 @@ class Runner:
         except Exception:
             return None
 
-    def _walk_to_tile(self, target_fp, tries_each: int = 2) -> bool:
-        """走到"车名指纹 = target_fp"的那个车格 —— **按像素方向走，不看行列号**。
+    def _walk_to_tile(self, target_fp=None, tries_each: int = 2) -> bool:
+        """朝"视野里最近的一台**可处理**的车"走；**光标压到任何一台可处理的车就停**。
 
-        为什么改（2026-10-03 用户跑挂："走不到目标车格 (2,1)（现在 (1,0)）"）：
-        * 列表里部分露出的车格时有时无 → 行列号会整体错位，目标和光标对不上；
-        * 走动时列表会滚动 → 记下来的目标行列号立刻失效。
-        改成：每轮都重新用**指纹**找目标、用**黄框**找光标，按两个框中心的像素偏移选方向
-        （目标在下方就 ↓、在右侧就 →），按完验证"黄框真的变了"，两个方向都不动才算失败。
+        【2026-10-03 用户实测，两次推翻前两版】
+        * 第一版按 (行,列) 号走 → 部分露出的车格时有时无、滚动后行列号失效；
+        * 第二版按"目标指纹"走 → 车库里有多台**同款同名**车（都是 2019 DEBERTI
+          SUPER DUTY F-250），指纹一模一样 → 目标在它们之间来回认错 → 用户看到
+          "反复在这一台和上面一台之间来回横跳"。
+        结论：**走路这一步不能依赖指纹去"认目标"**。现在只用两个不依赖指纹的量：
+        * 候选 = 视野里 ♥ 分数低于阈值、且没被跳过/标记的车格（就是 _grid_tiles 的结果）；
+        * 方向 = 光标框与"最近候选"框的像素偏移（纵向：↓/↑；实测 →/← 在车库列表里不动）；
+        一落到候选格上就返回（因为我们一直朝最近的候选走，停下的正是最左最上的那台）。
+        指纹仍然用于**跳过**（刚处理过的那台、走不到的），不用于认路。
         """
-        stuck = 0
+        self._last_walk_why = ""
         for _ in range(self.cfg.grid_walk_max):
             self.s.stop.check()
             frame = self.frame()
             tiles = self._grid_tiles(frame)
-            tbox = None
-            for (r, c, bx, by, bw, bh, has, sc) in tiles:
-                fp = self._title_crop(frame, bx, by, bw, bh)
-                if fp is not None and self._fp_diff(fp, target_fp) < self.cfg.fp_same_tol:
-                    tbox = (bx, by, bw, bh)
-                    break
             cbox = self._cursor_box(frame, tiles)
             if cbox is None:
+                self._last_walk_why = "cursor_unknown"
                 self.log.event("grid_walk_fail", why="cursor_unknown")
                 return False
-            if tbox is None:                      # 目标滚出视野了 → 沿纵向找回来
-                stuck += 1
-                if stuck > 8:
-                    self.log.event("grid_walk_fail", why="target_lost", stuck=stuck)
-                    return False
-                # 不记得往前还是往后走丢的 → 两下 ↓、两下 ↑ 地扫（right/left 在车库列表里不动光标）
-                self.press("down" if (stuck % 4) < 2 else "up", "目标不在视野 → 纵向找回来")
-                self.sleep(self.cfg.grid_walk_dwell)
-                continue
-            cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
-            tx, ty = tbox[0] + tbox[2] / 2.0, tbox[1] + tbox[3] / 2.0
 
             def _ov(a0, a1, b0, b1):
                 """两段区间重叠占较短一段的比例（1=完全重叠，0=不沾边）。"""
@@ -886,16 +875,50 @@ class Runner:
                 short = min(a1 - a0, b1 - b0)
                 return inter / float(short) if short > 0 else 0.0
 
-            same_col = _ov(cbox[0], cbox[0] + cbox[2], tbox[0], tbox[0] + tbox[2]) > 0.5
-            same_row = _ov(cbox[1], cbox[1] + cbox[3], tbox[1], tbox[1] + tbox[3]) > 0.5
-            if same_col and same_row:
-                return True                        # 光标已经在目标格上
-            # 【2026-10-03 实测修正】车库列表是**纵向**的：`↓` 列内往下、到底跳下一列，
-            # `↑` 是它的反向；而 **`→` / `←` 在车库列表里根本不动光标**
-            # （日志：连按 4 次 right，光标框一直是 (816,424,648,488) 一动不动 → target_lost）。
-            # 所以走路只用 ↓/↑：
-            #   * 目标在别的列 → 先沿着 ↓/↑ "换列"（列优先，用户口径）；
-            #   * 列对上了 → 再按行 ↓/↑。
+            valid = []           # 可处理的车格（不依赖指纹）
+            for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                if has:
+                    continue
+                fp = self._title_crop(frame, bx, by, bw, bh)
+                if self._fp_seen(fp) or self._fp_matches(fp, self._unreachable):
+                    continue
+                valid.append((r, c, bx, by, bw, bh, has, sc, fp))
+            # ① 光标压着的这格可处理吗？→ 到站
+            for (r, c, bx, by, bw, bh, has, sc, fp) in valid:
+                if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
+                        and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
+                    self._last_car_fp = fp
+                    self.log.event("grid_walk_stop", cell=[r, c],
+                                   heart_score=round(sc, 3), why="光标压着的就是待处理的车")
+                    return True
+            if not valid:
+                self._last_walk_why = "no_candidate"
+                self.log.event("grid_walk_stop", why="视野里没有可处理的车格")
+                return False
+            # ② 朝**最近的**候选走（用行列差选，方向稳，不会在同款同名车之间来回翻）
+            cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
+            def _cell_of_cursor():
+                best = None
+                for (r, c, bx, by, bw, bh, has, sc, fp) in valid:
+                    d = abs(bx - cbox[0]) + abs(by - cbox[1])
+                    if best is None or d < best[0]:
+                        best = (d, r, c, bx, by, bw, bh)
+                return best
+            cur_cell = None                  # 光标所在格的 (行,列)（从所有车格里找，不限于候选）
+            for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
+                        and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
+                    cur_cell = (r, c)
+                    break
+            tgt = min(valid, key=lambda v: (abs(v[0] - cur_cell[0]) + abs(v[1] - cur_cell[1])
+                                            if cur_cell else 0))
+            tx = tgt[2] + tgt[4] / 2.0
+            ty = tgt[3] + tgt[5] / 2.0
+            same_col = _ov(cbox[0], cbox[0] + cbox[2], tgt[2], tgt[2] + tgt[4]) > 0.5
+            same_row = _ov(cbox[1], cbox[1] + cbox[3], tgt[3], tgt[3] + tgt[5]) > 0.5
+            # 【2026-10-03 实测】车库列表是纵向的：↓ 列内往下/到底跳下一列、↑ 反向；
+            # **→/← 在车库列表里不动光标**（日志：连按 4 次 right，光标框一动不动）。
+            # 候选在别的列 → 先沿 ↓/↑ "换列"；列对上 → 再按行 ↓/↑。
             keys = []
             if not same_col:
                 keys.append("down" if tx > cx else "up")
@@ -903,23 +926,24 @@ class Runner:
                 keys.append("down" if ty > cy else "up")
             keys += [k for k in ("down", "up") if k not in keys]
             self.log.event("grid_walk_step", same_col=bool(same_col), same_row=bool(same_row),
-                           keys=keys[:2], cursor=list(cbox), target=list(tbox))
+                           keys=keys[:2], cursor=list(cbox), target=list(tgt[2:6]),
+                           cell=cur_cell, target_cell=[tgt[0], tgt[1]])
             progressed = False
             for key in keys[:max(1, tries_each)]:
-                self.press(key, f"走向目标车格（光标中心 {int(cx)},{int(cy)}"
-                                f"{'' if same_col else '，先换列'}）")
+                self.press(key, f"走向待处理车格 {[tgt[0], tgt[1]]}")
                 self.sleep(self.cfg.grid_walk_dwell)
                 f2 = self.frame()
-                t2 = self._grid_tiles(f2)
-                c2 = self._cursor_box(f2, t2)
+                c2 = self._cursor_box(f2, self._grid_tiles(f2))
                 if c2 is not None and tuple(c2) != tuple(cbox):
                     progressed = True
                     break
             if not progressed:
                 shot = self._save_evidence(self.frame(), "grid_walk_stuck")
-                print(f"  [!] 走不到目标车格（光标框 {cbox}）证据 {shot}")
+                print(f"  [!] 走不动（光标框 {cbox}）证据 {shot}")
                 self.log.event("grid_walk_fail", why="no_progress", cursor=list(cbox), shot=shot)
+                self._last_walk_why = "no_progress"
                 return False
+        self._last_walk_why = "budget"
         self.log.event("grid_walk_fail", why="budget")
         return False
 
@@ -1034,6 +1058,9 @@ class Runner:
                 self.log.event("grid_no_tiles", shot=shot)
                 return False
             cur = self._cursor_cell(frame, tiles)
+            # 每次进列表都清空"这次走不到"的名单：它只用来**本轮**别重复撞同一台，
+            # 绝不能变成永久跳过（车库里同款同名车指纹相同，永久跳过会误杀）。
+            self._unreachable = []
             # 【两道校验并用，缺一不可】2026-10-03 用户补充：“有的车我点满了也没有加入收藏，
             # 所以你不能删掉旧的校验机制” —— 所以 ♥ 只是“他标记过的车”，不是全集：
             # 候选 = 「没 ♥」**且**「本次会话还没处理过」（指纹集合，旧机制）。
@@ -1067,7 +1094,7 @@ class Runner:
                 shot = self._save_evidence(frame, f"target_r{r}c{c}")
                 self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
                                cand=len(todo), fp_ok=fp is not None, shot=shot)
-                if not self._walk_to_tile(fp):
+                if not self._walk_to_tile():
                     # 走不到这台 → 记下它的指纹（本次运行不再选它），换下一台继续，
                     # 不能因为一台够不着就把整个 B 阶段停掉（2026-10-03 就是这么失败的）
                     if fp is not None:
@@ -1170,7 +1197,7 @@ class Runner:
                 if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
                     self.log.event("favorite_done", ok=False, why="list_lost")
                     return False
-                if not self._walk_to_tile(self._last_car_fp):
+                if not self._walk_to_tile():
                     self.log.event("favorite_done", ok=False, why="walk_back_failed")
                     return False
         self.log.event("favorite_done", ok=False, why="both_offsets_failed")
