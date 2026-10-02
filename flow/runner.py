@@ -799,16 +799,15 @@ class Runner:
                     stall = 0
                 continue
             # ---- 找到 22B 那格了 ----
+            # 【顺序有讲究，2026-10-02 23:50 实测】鼠标点车格**选不中**：点完按 Enter/Enter
+            # 面板等满 60s 都没回来（日志 set_22b_enter panel=false）；而方向键按格距走过去
+            # 一次就换成了。所以：**先方向键**，鼠标点只当兜底（不浪费那 60 秒）。
             pt = (int(hit.center[0]), int(hit.center[1]))
-            self.log.event("set_22b_found", went=went, at=list(pt), score=round(score, 3))
-            print(f"  [找] 第 {went} 列找到 22B：{pt}（{score:.3f}）→ 点它")
-            self.click_client(pt, "点 22B 车格")
-            self.sleep(0.9)
-            if self._enter_car_and_verify(f"鼠标点{pt}"):
-                return True
-            # 鼠标点没生效 → 用方向键按格数走过去（用户手动就是这么走的）
             col, row = self._grid_cell_of(hit)
-            print(f"  [找] 改用方向键：右 {col} 次、下 {row} 次")
+            self.log.event("set_22b_found", went=went, at=list(pt), score=round(score, 3),
+                           col=col, row=row)
+            print(f"  [找] 第 {went} 列找到 22B：{pt}（{score:.3f}）"
+                  f"→ 方向键 右{col} 下{row} 走过去")
             self.log.event("set_22b_arrows", col=col, row=row)
             for _ in range(col):
                 self.press("right", "往右一列")
@@ -818,6 +817,12 @@ class Runner:
                 self.sleep(0.3)
             self.sleep(0.8)
             if self._enter_car_and_verify(f"方向键{col},{row}"):
+                return True
+            # 方向键也不见效 → 试鼠标点它（别的界面/别的游戏鼠标点也许能选中）
+            print("  [找] 方向键没成功 → 退一步试鼠标点这格")
+            self.click_client(pt, "点 22B 车格")
+            self.sleep(0.9)
+            if self._enter_car_and_verify(f"鼠标点{pt}"):
                 return True
             # 两条路都没换成（比如鼠标点选不中、格距算错）→ 记一次失败
             tries_on_found += 1
@@ -1070,8 +1075,12 @@ class Runner:
                     return {"stopped": "back_to_22b_failed", **self.stats}
         except AbortedByUser as exc:
             print(f"\n[急停] {exc}")
+            # 写进日志：否则事后只剩一条 release_all 收尾，分不清"人停的"还是"自己停的"
+            # （2026-10-02 那次换车跑完就是这种情况，只能靠猜）
+            self.log.event("abort", reason=str(exc)[:200])
         except KeyboardInterrupt:
             print("\n[Ctrl+C] 手动中断")
+            self.log.event("interrupt")
         except Exception as exc:
             # 【兜底】2026-10-02 血泪：car_tile_22b 漏进装配名单 → 扫描时 KeyError →
             # 程序带着浅显的 traceback 直接退出，日志里只剩一条 release_all 收尾，
