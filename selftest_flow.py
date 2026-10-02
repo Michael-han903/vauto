@@ -305,5 +305,65 @@ try:
 except Exception as _e:
     ck("鼠标归位自检可运行", False, repr(_e))
 
+print("\n⑪ 走路逻辑：合成车格模拟（复现 2026-10-03 那次『走不到 (2,1)』）")
+try:
+    _cfg6 = RunConfig()
+    _cfg6.log_dir = tempfile.mkdtemp(prefix="vauto_selftest6_")
+    _cfg6.dry_run = False
+    _r6 = Runner(build_offline_stack(), _cfg6)
+    _W, _H, _GAP, _COLS, _ROWS = 648, 488, 24, 4, 3
+
+    def _cell_box(r, c):
+        return (816 + c * (_W + _GAP), 424 + r * (_H + _GAP), _W, _H)
+
+    def _sim(cur, semantics):
+        """把 Runner 的"看画面"接口换成合成网格；press 按给定的键语义推进光标。"""
+        st = {"cur": cur, "presses": []}
+        _r6._grid_tiles = lambda frame, _st=st: [(r, c, *_cell_box(r, c), False, 0.2)
+                                                for r in range(_ROWS) for c in range(_COLS)]
+        _r6._cursor_box = lambda frame, _st=st: _cell_box(*_st["cur"])
+        _r6._title_crop = lambda frame, x, y, w, h: (
+            f"cell_{(y - 424) // (_H + _GAP)}_{(x - 816) // (_W + _GAP)}")
+        _r6._fp_diff = lambda a, b: 0.0 if a == b else 100.0
+        _r6.frame = lambda guard=True: None
+        _r6.sleep = lambda s: None
+
+        def _press(key, note="", _st=st):
+            _st["presses"].append(key)
+            semantics(_st, key)
+        _r6.press = _press
+        return st
+
+    def _col_major(st, key):
+        """模拟"列优先"语义：→ 换列（保持行）、↓ 列内往下到底跳下一列、↑/← 反向。"""
+        r, c = st["cur"]
+        if key == "right":
+            st["cur"] = (r, min(_COLS - 1, c + 1))
+        elif key == "left":
+            st["cur"] = (r, max(0, c - 1))
+        elif key == "down":
+            if r + 1 >= _ROWS:
+                st["cur"] = (0, min(_COLS - 1, c + 1))
+            else:
+                st["cur"] = (r + 1, c)
+        elif key == "up":
+            st["cur"] = (r - 1, c) if r > 0 else (_ROWS - 1, max(0, c - 1))
+
+    _s1 = _sim((0, 0), _col_major)
+    _ok1 = _r6._walk_to_tile("cell_2_1")
+    ck("走路能走到 (2,1)（= 用户那次失败的坐标）", _ok1 and _s1["cur"] == (2, 1),
+       f"cur={_s1['cur']} 按键 {_s1['presses']}")
+    ck("而且是**先换列再换行**", _s1["presses"][:1] == ["right"], f"按键序列 {_s1['presses'][:4]}")
+
+    _s2 = _sim((0, 0), _col_major)
+    _ok2 = _r6._walk_to_tile("cell_0_3")
+    ck("同行的 (0,3) 也能走到", _ok2 and _s2["cur"] == (0, 3), f"cur={_s2['cur']} 按键 {_s2['presses']}")
+
+    _s3 = _sim((2, 3), _col_major)
+    _ok3 = _r6._walk_to_tile("cell_0_1")
+    ck("左上方的 (0,1) 也能走到", _ok3 and _s3["cur"] == (0, 1), f"cur={_s3['cur']} 按键 {_s3['presses']}")
+except Exception as _e:
+    ck("走路模拟自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

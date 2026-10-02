@@ -835,13 +835,25 @@ class Runner:
                 continue
             cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
             tx, ty = tbox[0] + tbox[2] / 2.0, tbox[1] + tbox[3] / 2.0
-            if abs(cx - tx) < 220 and abs(cy - ty) < 160:
+
+            def _ov(a0, a1, b0, b1):
+                """两段区间重叠占较短一段的比例（1=完全重叠，0=不沾边）。"""
+                inter = min(a1, b1) - max(a0, b0)
+                short = min(a1 - a0, b1 - b0)
+                return inter / float(short) if short > 0 else 0.0
+
+            same_col = _ov(cbox[0], cbox[0] + cbox[2], tbox[0], tbox[0] + tbox[2]) > 0.5
+            same_row = _ov(cbox[1], cbox[1] + cbox[3], tbox[1], tbox[1] + tbox[3]) > 0.5
+            if same_col and same_row:
                 return True                        # 光标已经在目标格上
+            # 【用户口径 2026-10-03】"应该先移动到对应列" —— 列优先：先 →/← 换列，
+            # 再在列内 ↓/↑ 换行。写反了会出现"列没对上就按↓"，落到别的列去（车换不过去）。
+            # 同列/同行用**矩形重叠**判断，不用中心距离：同列内靠边的格子中心差能有 300 像素。
             keys = []
-            if abs(ty - cy) > 60:
-                keys.append("down" if ty > cy else "up")
-            if abs(tx - cx) > 60:
+            if not same_col:
                 keys.append("right" if tx > cx else "left")
+            if not same_row:
+                keys.append("down" if ty > cy else "up")
             keys += [k for k in self.cfg.grid_walk_keys if k not in keys]
             progressed = False
             for key in keys[:max(1, tries_each)]:
