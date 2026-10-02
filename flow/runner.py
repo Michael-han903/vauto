@@ -947,6 +947,38 @@ class Runner:
         self.log.event("grid_walk_fail", why="budget")
         return False
 
+    def _click_tile(self, tiles, cell):
+        """鼠标直接点车格中心，把它选中（用户 2026-10-03 建议："改成直接让鼠标点击"）。
+
+        为什么划算：靠"光标 + 方向键"走路在这个列表里**已经三次翻车**
+          * `→`/`←` 压根不动光标；
+          * `↓`/`↑` 的真实方向与推想相反（日志：按 down，光标从 y=1432 跳到 y=928？）；
+          * 同款同名车让"靠指纹认目标"来回认错 → 用户看到横跳。
+        而鼠标点击是**绝对定位**，一点一个准。点完不做"黄框"硬校验（黄框本身也判不准），
+        交给下一步的**功能性验证**：回车能不能弹出「选择操作」菜单（见 _enter_car_now）。
+
+        返回 True = 点过了（黄框没判出/判出且落在这格）；False = 黄框明确落在**别的**格上
+        （说明这点没选中）或这格不在本次检出里。
+        """
+        for (rr, cc, bx, by, bw, bh, _has, _sc) in tiles:
+            if (rr, cc) != tuple(cell):
+                continue
+            cx, cy = int(bx + bw / 2), int(by + bh / 2)
+            self.click_client((cx, cy), note=f"鼠标点车格 ({rr},{cc})")
+            self.sleep(self.cfg.grid_walk_dwell)
+            f2 = self.frame()
+            c2 = self._cursor_box(f2, self._grid_tiles(f2))
+            if c2 is None:                     # 黄框判不出来 → 交给功能性验证
+                self.log.event("grid_click_ok", cell=list(cell), cursor=None)
+                return True
+            if abs(c2[0] - bx) <= 24 and abs(c2[1] - by) <= 24:
+                self.log.event("grid_click_ok", cell=list(cell), cursor=list(c2))
+                return True
+            self.log.event("grid_click_not_selected", cell=list(cell), cursor=list(c2))
+            print(f"  [!] 点了 ({rr},{cc}) 但黄框在 {list(c2)} → 这点没选中")
+            return False
+        return False
+
     def _enter_car_now(self) -> bool:
         """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
         self.press(self.cfg.confirm_key, "打开「选择操作」")
@@ -1094,8 +1126,15 @@ class Runner:
                 shot = self._save_evidence(frame, f"target_r{r}c{c}")
                 self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
                                cand=len(todo), fp_ok=fp is not None, shot=shot)
-                if not self._walk_to_tile():
-                    # 走不到这台 → 记下它的指纹（本次运行不再选它），换下一台继续，
+                # 【2026-10-03 用户建议】直接用鼠标点这一格把光标放过去（绝对定位，
+                # 不再依赖"光标+方向键走路"那套 —— 它已三次翻车）。点不中再退回走路。
+                sel = self._click_tile(tiles, (r, c))
+                if sel is not True:
+                    print("  [找] 鼠标点不中 → 退回方向键走路")
+                    self.log.event("grid_click_fallback", row=r, col=c)
+                    sel = True if self._walk_to_tile() else False
+                if sel is not True:
+                    # 走不到这台 → 记下它的指纹（本轮不再选它），换下一台继续，
                     # 不能因为一台够不着就把整个 B 阶段停掉（2026-10-03 就是这么失败的）
                     if fp is not None:
                         self._unreachable.append(fp)
@@ -1125,11 +1164,28 @@ class Runner:
             diff = float(block_max_abs_diff(before, after, blocks=self.cfg.nav_change_blocks))
             self.log.event("grid_advance", attempt=attempt, diff=round(diff, 1))
             if diff < self.cfg.nav_change_threshold:
-                shot = self._save_evidence(self.frame(), "grid_end")
-                print(f"  [B] 列表滚不动了（分块差 {diff:.1f}）→ 没有待处理的车了（证据 {shot}）")
-                self.log.event("grid_end", diff=round(diff, 1), shot=shot)
-                self._all_cars_seen = True
-                return False
+                # 【用户建议"点击翻页"】本品牌滚到头了 → 鼠标点品牌栏 ▶ 箭头换下一个品牌
+                # （实测品牌箭头在 (3621,354)，见 docs/业务实测要点.md）。一个品牌的车
+                # 处理完就走下一个品牌，点满 6 个品牌都还是"没得处理"才认输。
+                self._brand_jumps = getattr(self, "_brand_jumps", 0) + 1
+                if self._brand_jumps > 6:
+                    shot = self._save_evidence(self.frame(), "grid_end")
+                    print(f"  [B] 连翻 6 个品牌都没找到没收藏的车（证据 {shot}）→ 收工")
+                    self.log.event("grid_end", diff=round(diff, 1), brand_jumps=self._brand_jumps, shot=shot)
+                    self._all_cars_seen = True
+                    return False
+                b_before = self._list_roi(self.frame())
+                self.click_client(self.cfg.brand_next_click, "点品牌栏 ▶ 翻下一个品牌")
+                self.sleep(self.cfg.grid_walk_dwell * 2)
+                b_after = self._list_roi(self.frame())
+                b_diff = float(block_max_abs_diff(b_before, b_after, blocks=self.cfg.nav_change_blocks))
+                self.log.event("grid_brand_jump", n=self._brand_jumps, diff=round(b_diff, 1))
+                print(f"  [B] 本品牌滚到头（差 {diff:.1f}）→ 点 ▶ 翻到下一个品牌（第 {self._brand_jumps} 个）")
+                if b_diff < self.cfg.nav_change_threshold:      # 连品牌都没变 → 真没得翻了
+                    shot = self._save_evidence(self.frame(), "grid_end")
+                    self.log.event("grid_end", diff=round(b_diff, 1), why="品牌也翻不动", shot=shot)
+                    self._all_cars_seen = True
+                    return False
         shot = self._save_evidence(self.frame(), "grid_budget")
         print(f"  [!] 翻了 {self.cfg.nav_budget} 屏都没找到没收藏的车（证据 {shot}）")
         self.log.event("grid_budget", shot=shot)

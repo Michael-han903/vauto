@@ -64,6 +64,7 @@ class RunConfig:
 
     enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
     tab_creativity_click: Tuple[int, int] = (2390, 476)   # 【实测】创意中心标签中心（坐标兜底；正常走 tab_creativity 模板匹配）
+    brand_next_click: Tuple[int, int] = (3621, 354)   # 【实测 2026-10-03】品牌栏 ▶ 箭头（本品牌滚到头 → 点它翻下一个品牌）
     share_code: str = "161047605"                          # 【实测】挑战共享代码
     dialog_cancel_key: str = "enter"                      # 关掉挡路弹窗按哪个键。
                                                           # 【用户要求】不管高亮在哪一行都按回车；
