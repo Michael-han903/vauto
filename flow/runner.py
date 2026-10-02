@@ -58,6 +58,7 @@ DETECTORS = (
     "car_current_garage",                                   # 当前车辆是 22B（车库版式）
     "tile_collection",                                      # 在不在主菜单剧情页（与当前车无关）
     "panel_search_title",                                   # 进赛事：搜索面板已打开
+    "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -699,6 +700,24 @@ class Runner:
         return False
 
     # ---------------- 进赛事（自动开局）---------------- #
+    def _enter_fail(self, step: str) -> bool:
+        """进赛事某一步没生效 → 存证据图 + 停下（**绝不继续盲按**）。
+
+        2026-10-02 的教训：点错标签那一次，程序在"这一步没生效"之后还继续按了 18 下，
+        把游戏带到搜索面板那种半途状态。一步失败就应该停。
+        """
+        shot = self._save_evidence(self.frame(), f"enter_fail_{step}")
+        print(f"  [!] 进赛事卡在「{step}」这一步 → 停下（证据: {shot}）")
+        self.log.event("enter_failed", step=step, shot=shot)
+        return False
+
+    def _click_creativity_tab(self) -> None:
+        """点主菜单的「创意中心」标签：优先用标签模板匹配到的中心，匹配不上再退回坐标。"""
+        if not self.click_match("tab_creativity", note="创意中心 tab"):
+            self.log.event("tab_label_miss", tab="creativity")
+            print("  [!] 认不出「创意中心」标签（也许已经在创意中心页）→ 按坐标兜底点一次")
+            self.click_client(self.cfg.tab_creativity_click, "创意中心 tab（坐标兜底）")
+
     def _do_step(self, action, note: str, timeout: float = 8.0) -> bool:
         """执行一步，并确认「画面按预期变了」。返回 False = 这一步没生效。
 
@@ -757,21 +776,23 @@ class Runner:
                 print(f"  [!] 还是不在菜单里，放弃自动进赛事（证据: {shot}）")
                 self.log.event("enter_no_menu", scores=sc, shot=shot)
                 return False
-        # 1) 点「创意中心」标签（固定坐标，实测 x≈2110 y≈470）
-        self._do_step(lambda: self.click_client(cfg.tab_creativity_click, "创意中心 tab"),
-                      "点「创意中心」标签")
+        # 1) 点「创意中心」标签（优先用标签模板匹配到的中心）
+        if not self._do_step(self._click_creativity_tab, "点「创意中心」标签"):
+            return self._enter_fail("click_creativity")
         # 2) Enter 进 EventLab → ↓ 到「参加挑战」→ Enter
-        self._do_step(lambda: self.press(cfg.confirm_key, "进入 EventLab"), "进入 EventLab")
+        if not self._do_step(lambda: self.press(cfg.confirm_key, "进入 EventLab"),
+                             "进入 EventLab"):
+            return self._enter_fail("enter_eventlab")
         self.press("down", "移到「参加挑战」")          # 光标一格，不设闸门
         self.sleep(0.3)
-        self._do_step(lambda: self.press(cfg.confirm_key, "进入「参加挑战」"), "进入「参加挑战」")
+        if not self._do_step(lambda: self.press(cfg.confirm_key, "进入「参加挑战」"),
+                             "进入「参加挑战」"):
+            return self._enter_fail("enter_join_challenge")
         # 3) Backspace 打开搜索面板（这一步有真判据复核）
-        self._do_step(lambda: self.press("backspace", "打开搜索面板"), "打开搜索面板")
+        if not self._do_step(lambda: self.press("backspace", "打开搜索面板"), "打开搜索面板"):
+            return self._enter_fail("backspace_search")
         if not self.cfg.replay and self._wait_for("panel_search_title", 6.0) is None:
-            shot = self._save_evidence(self.frame(), "enter_no_search_panel")
-            print(f"  [!] 搜索面板没出现（证据: {shot}）→ 放弃进赛事")
-            self.log.event("enter_failed", step="search_panel", shot=shot)
-            return False
+            return self._enter_fail("search_panel_judge")
         # 4) ↑ 到「共享代码」→ Enter → 输代码（已填就别重输）→ Enter → ↓ → Enter
         self.press("up", "移到「共享代码」行")
         self.press(cfg.confirm_key, "进入代码输入")

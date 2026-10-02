@@ -9,7 +9,12 @@
       "desc": "主菜单「剧情」页左下磁贴上的「收集簿」白字 —— 用来判断「我在不在主菜单」（与当前车辆无关；换车后仍然有效，这正是它存在的理由）",
       "threshold": 0.75,
       "release_threshold": 0.67,
-      "roi": [520, 1100, 380, 180],
+      "roi": [
+        520,
+        1100,
+        380,
+        180
+      ],
       "confirm_frames": 2,
       "neg_max_measured": 0.3211,
       "neg_frames": 125,
@@ -21,7 +26,12 @@
       "desc": "「选择操作」菜单的黄色标题条 —— 判定该菜单是否已弹出",
       "threshold": 0.75,
       "release_threshold": 0.69,
-      "roi": [1252, 734, 1336, 135],
+      "roi": [
+        1252,
+        734,
+        1336,
+        135
+      ],
       "confirm_frames": 2,
       "neg_max_measured": 0.446,
       "neg_frames": 229,
@@ -32,11 +42,61 @@
       "desc": "「选择操作」菜单里默认高亮的「上车」行 —— 点它 = 上车；也可只作为菜单已弹出的二次确认",
       "threshold": 0.85,
       "release_threshold": 0.79,
-      "roi": [1252, 882, 1336, 116],
+      "roi": [
+        1252,
+        882,
+        1336,
+        116
+      ],
       "confirm_frames": 1,
       "neg_max_measured": 0.664,
       "neg_frames": 229,
       "manual": true
+    },
+    "tab_vehicle": {
+      "file": "templates/tab_vehicle.png",
+      "desc": "主菜单标签栏的「车辆」标签（白底黑字＝未选中态）。用它**匹配到的中心**去点，避免写死坐标点错标签；选中的标签是黑底白字，不会误配。",
+      "threshold": 0.785,
+      "release_threshold": 0.725,
+      "roi": [
+        1150,
+        420,
+        1600,
+        110
+      ],
+      "confirm_frames": 2,
+      "pos_frames": 5,
+      "pos_min_measured": 0.9942,
+      "neg_frames": 234,
+      "neg_max_measured": 0.5765,
+      "click_center_measured": [
+        1495,
+        476
+      ],
+      "manual": true
+    },
+    "tab_creativity": {
+      "file": "templates/tab_creativity.png",
+      "desc": "主菜单标签栏的「创意中心」标签（白底黑字＝未选中态）。**2026-10-02 教训**：原来把它的中心写成 (2110,470)，实测那是「在线」的位置 → 自动进赛事第一步点错标签。现在改成匹配标签再点中心。",
+      "threshold": 0.713,
+      "release_threshold": 0.653,
+      "roi": [
+        1150,
+        420,
+        1600,
+        110
+      ],
+      "confirm_frames": 2,
+      "pos_frames": 9,
+      "pos_min_measured": 0.9954,
+      "neg_frames": 230,
+      "neg_max_measured": 0.4315,
+      "click_center_measured": [
+        2390,
+        476
+      ],
+      "manual": true
     }
-  }
+  },
+  "_verified_tabs": "2026-10-02 21:48 用户实测：自动进赛事把 (2110,470) 点成了「在线」。改用标签模板匹配：两张模板在两张不同截图里逐像素一致（自匹配 1.000），在 238/234 帧上正样本 ≥0.994、负样本 ≤0.577 → 阈值 0.785/0.713。"
 }
