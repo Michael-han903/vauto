@@ -1023,6 +1023,80 @@ class Runner:
             return False
         return False
 
+    def _walk_to_fp(self, fp, tries_each: int = 2) -> bool:
+        """走向"车名指纹 = fp 的那一格"（加收藏专用：回到刚处理的那台车）。
+
+        为什么不复用 _walk_to_tile（2026-10-03 实测 favorite_walk_fail）：
+        刚处理完的那台车**没有 ♥**、而且已经进了"本次会话弄过"的跳过集合 →
+        通用走路会把它当成"不可处理"直接过滤掉 → 永远走不到自己的车。
+        这里**只认指纹**，并优先挑"当前车"特征的那一格：
+
+        当前车的 ♥ 位置是偏的（实测分数 0.776/0.784，正常 ♥=1.000、没 ♥≈0.2）——
+        因为"当前车辆"那格的右下角图标排布与别格不同。用它 + 指纹双重确认，
+        既不会认错同名车，也不受列表滚动影响。
+        """
+        if fp is None:
+            return False
+        for _ in range(self.cfg.grid_walk_max):
+            self.s.stop.check()
+            frame = self.frame()
+            tiles = self._grid_tiles(frame)
+            cbox = self._cursor_box(frame, tiles)
+            if cbox is None:
+                self.log.event("walk_fp_fail", why="cursor_unknown")
+                return False
+
+            def _ov(a0, a1, b0, b1):
+                inter = min(a1, b1) - max(a0, b0)
+                short = min(a1 - a0, b1 - b0)
+                return inter / float(short) if short > 0 else 0.0
+
+            tbox = None
+            cur_car_tile = None            # 当前车特征：指纹对得上 且 ♥ 分在"偏移带"
+            for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                f = self._title_crop(frame, bx, by, bw, bh)
+                if f is None or self._fp_diff(f, fp) >= self.cfg.fp_same_tol:
+                    continue
+                if 0.65 <= sc < 0.90:
+                    cur_car_tile = (bx, by, bw, bh)
+                    break
+                if tbox is None:
+                    tbox = (bx, by, bw, bh)
+            if cur_car_tile is not None:
+                tbox = cur_car_tile
+            if tbox is None:
+                self.log.event("walk_fp_fail", why="target_not_visible")
+                return False
+            if (_ov(cbox[0], cbox[0] + cbox[2], tbox[0], tbox[0] + tbox[2]) > 0.5
+                    and _ov(cbox[1], cbox[1] + cbox[3], tbox[1], tbox[1] + tbox[3]) > 0.5):
+                return True
+            cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
+            tx, ty = tbox[0] + tbox[2] / 2.0, tbox[1] + tbox[3] / 2.0
+            same_col = _ov(cbox[0], cbox[0] + cbox[2], tbox[0], tbox[0] + tbox[2]) > 0.5
+            same_row = _ov(cbox[1], cbox[1] + cbox[3], tbox[1], tbox[1] + tbox[3]) > 0.5
+            if same_col and same_row:
+                return True
+            keys = []
+            if not same_col:
+                keys.append("down" if tx > cx else "up")
+            elif not same_row:
+                keys.append("down" if ty > cy else "up")
+            keys += [k for k in ("down", "up") if k not in keys]
+            progressed = False
+            for key in keys[:max(1, tries_each)]:
+                self.press(key, "走向刚处理的那台车（准备加收藏）")
+                self.sleep(self.cfg.grid_walk_dwell)
+                f2 = self.frame()
+                c2 = self._cursor_box(f2, self._grid_tiles(f2))
+                if c2 is not None and tuple(c2) != tuple(cbox):
+                    progressed = True
+                    break
+            if not progressed:
+                self.log.event("walk_fp_fail", why="no_progress")
+                return False
+        self.log.event("walk_fp_fail", why="budget")
+        return False
+
     def _enter_car_now(self) -> bool:
         """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
         self.press(self.cfg.confirm_key, "打开「选择操作」")
@@ -1278,8 +1352,9 @@ class Runner:
             print("  [!] 没有「刚处理的那台车」的指纹 → 跳过收藏（不猜、不点错车）")
             self.log.event("favorite_no_target", why="no_fp")
             return False
-        # 走过去 = 按指纹找（位置无关）→ 到不了就不收藏
-        if not self._walk_to_tile(self._last_car_fp):
+        # 走过去 = **专用的指纹走路**（不看 ♥、不看"这次弄过"的跳过集合 ——
+        # 刚处理完的车正好两样都占，用通用走路会被过滤掉，实测 favorite_walk_fail）
+        if not self._walk_to_fp(self._last_car_fp):
             shot = self._save_evidence(self.frame(), "favorite_walk_fail")
             print(f"  [!] 走不到刚处理的那台车 → 不加收藏 证据 {shot}")
             self.log.event("favorite_no_target", why="walk_fail", shot=shot)
@@ -1319,7 +1394,7 @@ class Runner:
                 if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
                     self.log.event("favorite_done", ok=False, why="list_lost")
                     return False
-                if not self._walk_to_tile():
+                if not self._walk_to_fp(self._last_car_fp):
                     self.log.event("favorite_done", ok=False, why="walk_back_failed")
                     return False
         self.log.event("favorite_done", ok=False, why="both_offsets_failed")
