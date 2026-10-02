@@ -383,6 +383,9 @@ class Runner:
                         timeout=self.cfg.round_settle_before, settle=0.8, scale=0.5,
                         poll=min(0.3, self.cfg.poll))
         # 2) 按住 W
+        # 先松一次再按：loading/过场画面静止时 wait_stable 会提前返回，如果那时就已经按着 W，
+        # 这条"按下"事件可能被加载过程吞掉（游戏加载完不一定会重新读键态）→ 重新发一次 keydown。
+        self.release_all("加载结束，准备按住 W")
         self.hold(self.cfg.hold_key, "挑战进行中")
         # 3) 轮询结算判据（两个判据每帧都要喂，否则其中一个的连续帧计数会断）
         polls, settle_hit = 0, None
@@ -702,7 +705,8 @@ class Runner:
             print("      → 跑 A 之前必须手动把车换回 1998 斯巴鲁 Impreza 22B-STI；"
                   "只想刷技能点可以直接 --phase spend")
         else:
-            print("  [!] 看不到菜单，无法判断当前车辆；请在主菜单或车库页跑这条校验")
+            print("  [!] 看不到菜单（当前不在主菜单/车库页）→ 无法校验当前车。"
+                  "如果你已经在赛事里，加 --no-car-check 跳过这条校验")
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
 
@@ -862,6 +866,15 @@ class Runner:
         if not cfg.dry_run:
             print("提示：随时按 F1 立即中止；目标窗口不在前台时全部动作会自动暂停。")
         try:
+            # 【顺序很重要】车检必须在"菜单可见"的时候做 —— 进了赛事/挑战之后，左上角那块
+            # 车名面板就不存在了，check_car_22b 必然失败并把整个运行停掉。
+            # 2026-10-02 实测：自动进赛事成功之后卡在这里（日志 car_check_failed，
+            # in_menu=false），一次 W 都没按 —— 就是"比赛开始了但程序一动不动"。
+            if cfg.a_enabled and cfg.require_car_22b:
+                if not self.check_car_22b():
+                    print("[!] 当前车辆校验未通过：请手动把车换成 22B 再跑（或 --no-car-check）")
+                    if not cfg.dry_run:
+                        return {"stopped": "car_check_failed", **self.stats}
             if cfg.a_enabled:
                 if cfg.enter_event:
                     # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
@@ -869,10 +882,6 @@ class Runner:
                         print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
                         if not cfg.dry_run:
                             return {"stopped": "enter_event_failed", **self.stats}
-                if cfg.require_car_22b and not self.check_car_22b():
-                    print("[!] 当前车辆校验未通过：请手动把车换成 22B 再跑（或 --no-car-check）")
-                    if not cfg.dry_run:
-                        return {"stopped": "car_check_failed", **self.stats}
                 self.phase_farm(cfg.rounds)
             if cfg.b_enabled and cfg.phase != "farm":
                 self.phase_spend(cfg.cars)
