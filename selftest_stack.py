@@ -278,5 +278,14 @@ stop.stop()
 stop.reset()
 ck("reset 后可恢复", not stop.triggered)
 
+# ---- Caps Lock 读写（用户要求：进游戏时自动检测并打开）----
+# 自检**只读 + 一次 no-op 设置**（传当前状态 = 不按键），绝不真的去改用户的键盘状态。
+from vauto.keystate import caps_lock_on, set_caps_lock
+
+_cur_cap = caps_lock_on()
+ck("Caps Lock 状态可读（只读，不改）", isinstance(_cur_cap, bool), f"当前 {'开' if _cur_cap else '关'}")
+ck("set_caps_lock(当前状态) 是 no-op（不会多按一次键）", set_caps_lock(_cur_cap) == _cur_cap,
+   f"仍是 {'开' if _cur_cap else '关'}")
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:6]}")
 sys.exit(1 if fails else 0)

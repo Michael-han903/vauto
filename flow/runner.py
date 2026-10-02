@@ -42,6 +42,7 @@ from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSim
                    load_calibration, build_detectors, mean_abs_diff, scaled_frame,
                    wait_stable, wait_active)
 from vauto.calib import calibration_table
+from vauto.keystate import caps_lock_on, set_caps_lock
 
 from .config import RunConfig
 from .nav import GridWalker
@@ -884,12 +885,26 @@ class Runner:
             menu = self._wait_for("menu_select_title", 1.2)
             row = self._wait_for("option_enter_car", 0.8)
             if menu is None or row is None:
-                # 这两个阈值是手工推定的，首次在线就靠这条日志定论
                 self.log.event("car_menu_threshold_check", menu_title=bool(menu),
                                enter_row=bool(row),
-                               note="「选择操作」菜单判据不完整，仍继续（Enter 幂等）")
+                               note="「选择操作」菜单判据不完整，仍继续")
         self.press(self.cfg.confirm_key, "选「上车」")
         if not self.cfg.replay:
+            # 【2026-10-03 用户实测】"会卡在这个界面的查看车辆里面的选项上" ——
+            # 因为**当前车辆**那一格的「选择操作」菜单里**没有「上车」这一项**
+            # （用户截图：只剩 添加至收藏 / 查看车辆 / 查看历史记录），于是这一下回车
+            # 点成了「添加至收藏」，菜单还开着，人就卡在菜单上。
+            # 复核判据：真的"上车"会立刻进入加载（「我的车辆」列表标题会消失）；
+            # 没上车则列表还在。
+            self.sleep(2.0)
+            _gar = self._probe_loc("page_title_garage", self.frame())[0]
+            if _gar == _gar and _gar >= self.s.dets["page_title_garage"].threshold:
+                self.log.event("enter_car_not_offered", garage_score=round(_gar, 3),
+                               note="列表还在 → 没上车（菜单首项不是「上车」，很可能是当前车辆）")
+                print(f"  [!] 这台车没有「上车」选项（列表还在，{_gar:.3f}）→ 按 Esc 退出菜单")
+                self.press("esc", "退出「选择操作」菜单")
+                self.sleep(0.8)
+                return False
             # 【2026-10-03 实测 · 修"上车后等 61 秒"】原来这里用 wait_stable 等"画面静止"，
             # 但上车加载完之后落在**主世界（自由驾驶）** —— 那画面一直在动（车在开、云在飘），
             # 永远不会"静止" → 每次都等满 car_change_timeout=60 秒超时才继续
@@ -931,10 +946,10 @@ class Runner:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
                         poll=min(0.3, self.cfg.poll))
-        # 【2026-10-03 用户指出】列表**最左侧那格 = 当前车辆**（左上角名条就是它）：B 的目的是
-        # 换走，不该去"研究"它。而且它那格的图标排布不同（♥ 被挪到轮胎图标旁边），标准位置
-        # 读不出收藏状态（实测 score=0.776 < 0.90 → 会被误当成"待处理"）。
-        # 所以：把"进列表时光标所在的那台"直接记成已处理，一律跳过。
+        # 【2026-10-03 用户纠正】"**只有最开始第一次**进入车辆列表的时候，第一辆才是当前车辆；
+        # 以后的最左侧第一辆就不是了"。所以这里只在**第一次**进列表时，把"光标所在那格"
+        # 记成已处理（那一刻它就是当前车辆）；之后一律靠 指纹 + ♥ 判断，绝不假设位置。
+        # （另外当前车辆那格的「选择操作」菜单里没有「上车」项，见 _enter_car_now 的复核。）
         if not self._seen_cars:
             _f0 = self.frame()
             _t0 = self._grid_tiles(_f0)
@@ -946,8 +961,8 @@ class Runner:
                         if _fp0 is not None:
                             self._seen_cars.append(_fp0)
                             self.log.event("car_fp_seed", cell=list(_c0),
-                                           note="当前车辆（最左侧/光标所在格）跳过")
-                            print(f"  [找] 光标在 ({_r},{_c}) = 当前车辆 → 记为已处理，跳过")
+                                           note="首次进列表：光标那格=当前车辆，跳过")
+                            print(f"  [找] 首次进列表，光标在 ({_r},{_c}) = 当前车辆 → 记为已处理")
                         break
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
@@ -1004,7 +1019,13 @@ class Runner:
                 self._last_car_fp = fp
                 print("  [换] 走到目标车 → 上车")
                 if not self._enter_car_now():
-                    return False
+                    # 这台没有「上车」选项（很可能是当前车辆，或菜单首项漂移）→
+                    # 记下来换下一台，**不要整个 B 阶段停掉**
+                    if fp is not None:
+                        self._unreachable.append(fp)
+                    print("  [找] 这台进不去 → 记下并换下一台")
+                    self.log.event("grid_target_unreachable", row=r, col=c, why="enter_failed")
+                    continue
                 if self._last_car_fp is not None:   # 记进“本次会话已处理”（旧校验机制，保留）
                     self._seen_cars.append(self._last_car_fp)
                     self.log.event("car_fp_record", total=len(self._seen_cars))
@@ -1587,6 +1608,16 @@ class Runner:
             print("提示：随时按 F1 立即中止；目标窗口不在前台时全部动作会自动暂停。")
         if not cfg.dry_run:
             self._park_pointer("开跑前先把鼠标归位到左上角")   # 免得一开始就悬停在某个控件上
+        # 【用户要求 2026-10-03】"设置一下程序进入地平线六的时候自动检测大写锁定状态，
+        # 没开的话开一下" —— 游戏的按键绑定/输入行为与 Caps Lock 有关，开着才和手动操作一致。
+        # 已经是开的就什么都不做（只读一次状态，不发多余按键）。
+        if cfg.ensure_caps_lock and not cfg.dry_run:
+            _cap_before = caps_lock_on()
+            _cap_after = set_caps_lock(True)
+            print("  [准备] 大写锁定：" + ("本来就是开的 ✓" if _cap_before
+                                        else "原来是关的 → 已打开 ✓")
+                  + f"（现在 {'开' if _cap_after else '关 ✗ 请手动开一下'}）")
+            self.log.event("caps_lock", before=bool(_cap_before), after=bool(_cap_after))
         try:
             # 【顺序很重要】车检必须在"菜单可见"的时候做 —— 进了赛事/挑战之后，左上角那块
             # 车名面板就不存在了，check_car_22b 必然失败并把整个运行停掉。
