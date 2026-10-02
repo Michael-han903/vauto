@@ -83,7 +83,11 @@ TEMPLATE_POSITIVE = {
                            "node_inactive/*"],
     # 当前车辆识别（用于"跑 A 之前必须确认当前车是 1998 斯巴鲁 Impreza 22B-STI"）
     # 注意：正样本是"该元素在画面里可见"的帧，不是"当前车是 22B"的帧 —— 这两者不等价。
-    "car_current_menu":   ["current_car_22b_menu/*", "menu_vehicle_tab/*"],
+    "car_current_menu":   ["current_car_22b_menu/*",
+                           "menu_vehicle_tab/menu_vehicle_tab_*",     # 用户截图（车辆 tab）
+                           "menu_vehicle_tab/dup_*"],                 # 录屏里"车名块正常显示"的帧
+    # 注：menu_vehicle_tab/video_* 那三帧是在"刚上车、名块还在淡入"时抓的（实测只有 0.486~0.602），
+    #     不能算正样本 —— 它们仍然是 tile_* 的正样本，两者互不影响。
     "car_current_garage": ["current_car_22b_garage/*", "current_car_22b_strip/*",
                            "garage_list/*"],
 }
@@ -430,14 +434,28 @@ def main(argv=None) -> int:
     print(f"可用 {len(usable)}/{len(results)} 张；耗时 {elapsed:.1f}s（粗搜解码 {coarse.loads} 帧，"
           f"精确解码 {fine.loads} 帧 / {fine.time:.1f}s，缓存 {coarse.memory_mb() + fine.memory_mb():.0f} MB）")
 
-    out = {"generated_at": datetime.now().isoformat(timespec="seconds"),
-           "scale": args.scale, "coarse_scale": args.coarse_scale,
-           "matcher": {"grayscale": True, "method": "TM_CCOEFF_NORMED"},
-           "frames_dir": "golden_frames", "elapsed_seconds": round(elapsed, 2),
-           "templates": {r["name"]: r for r in results}}
+    # 合并写回：只更新本次标定的模板，保留文件里其它模板的旧结果
+    # （旧行为是整体覆盖 —— 用 --template 单独重标一张会把其余阈值全删掉，属于隐蔽事故）
     out_path = Path(args.json)
+    existing = {}
+    if out_path.is_file():
+        try:
+            existing = json.loads(out_path.read_text(encoding="utf-8")).get("templates", {})
+        except Exception:
+            existing = {}
+    merged = dict(existing)
+    merged.update({r["name"]: r for r in results})
+    out = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "scale": args.scale, "coarse_scale": args.coarse_scale,
+        "matcher": {"grayscale": True, "method": "TM_CCOEFF_NORMED"},
+        "frames_dir": "golden_frames", "elapsed_seconds": round(elapsed, 2),
+        "last_run": [r["name"] for r in results],
+        "templates": merged,
+    }
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[+] 已写入 {out_path}")
+    kept = len(merged) - len(results)
+    print(f"[+] 已写入 {out_path}（本次 {len(results)} 张，保留旧结果 {kept} 张）")
 
     if args.report:
         md = ["# 模板标定报告\n",

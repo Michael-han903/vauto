@@ -14,20 +14,27 @@ visual_auto_toolkit/
 │  ├─ capture.py      mss 窗口抓帧 + win32gui 窗口矩形/客户区坐标 + PrintWindow 备选
 │  ├─ matching.py     OpenCV 模板匹配（多尺度 + NMS + alpha mask + 中文路径）
 │  ├─ vision.py       识别层组合件：ROI + 降采样 + 滞回去抖(VisualDetector) + 画面变化检测/dHash + wait_stable
+│  ├─ calib.py        读标定产物（thresholds.json + manual_thresholds.json）并装配检测器
 │  ├─ timing.py       随机延时 / 贝塞尔轨迹 / 非线性时间轴 / 可中断 sleep（纯函数可单测）
 │  ├─ input_sim.py    pynput 鼠标键盘仿真（抖动点击、贝塞尔移动、粘键兜底）
 │  ├─ focus.py        win32gui 前台焦点检测与「非前台即暂停」守卫
 │  ├─ safety.py       F1 全局急停 + AbortedByUser
 │  └─ recorder.py     帧录制器（素材工作流：采集 golden_frames 原始帧）
-├─ templates/         模板 + thresholds.json（标定产物：阈值/ROI/尺度/去抖参数）
+├─ flow/              业务层（刻意与工具层隔离，唯一会真按键的地方）
+│  ├─ config.py       运行期配置（所有"游戏侧事实"集中在此）
+│  ├─ nav.py          「更换车辆」列表的走格子策略（列优先 + 列到底跳列）
+│  └─ runner.py       A/B 状态机：A=按住W打挑战+Esc重试；B=换车+精通页Y解锁
+├─ templates/         模板 + thresholds.json（标定产物）/ manual_thresholds.json（手工推定）
 ├─ golden_frames/     素材：各场景原始帧（不入 git，体积大）
-├─ docs/              业务流程设计说明书 / 业务实测要点 / 标定报告
+├─ docs/              业务流程设计说明书 / 业务实测要点 / 流程录屏时间线 / 标定报告 / 运行手册
+├─ run_vauto.py       ★ 业务运行入口（--dry-run / --live / --phase farm|spend）
 ├─ demo_skeleton.py   调用骨架（业务逻辑全是 TODO 占位）
 ├─ record_scenes.py   引导式素材录制（只截图，不模拟输入）
 ├─ record_gui.py      素材录制图形界面
 ├─ template_crop_gui.py 模板裁剪器（从 golden_frames 框选元素）
 ├─ calibrate.py       模板标定：两段式（粗搜 ROI → ROI 内精确），产出 thresholds.json
-├─ selftest_*.py      自检（timing / stack / vision / e2e）
+├─ offline_replay.py  离线回放：A 循环跑在录屏帧上（不碰屏幕与键鼠）
+├─ selftest_*.py      自检（timing / stack / vision / flow）
 ├─ requirements.txt
 └─ README.md
 ```
@@ -179,7 +186,24 @@ py -3.14 record_gui.py        # 下拉选窗口 -> 预览画面确认 -> 选中�
 python selftest_timing.py
 python selftest_stack.py
 python selftest_vision.py
+python selftest_flow.py
+python offline_replay.py
 python e2e_demo_test.py
+```
+
+## 7.6 怎么真正跑起来
+
+见 `docs/运行手册.md`。最短路径：
+
+```bash
+py -3.14 run_vauto.py --list                                              # 找窗口
+py -3.14 run_vauto.py --title "Forza Horizon 6" --phase farm --rounds 1   # 只看不按（默认 dry-run）
+py -3.14 run_vauto.py --title "Forza Horizon 6" --phase farm --rounds 1 --live   # 真按键（F1 急停）
+```
+
+阶段说明：`--phase farm` = 按住 W 打挑战 + Esc 重试；`--phase spend` = 车库逐辆换车 + 精通页
+`Y`/`Enter` 解锁，直到弹出「不够支付全部」；`--phase both` = 先 farm 再 spend。
+**注意 spend 会把当前车辆换成别的车，再跑 farm 之前要人工把车换回 1998 斯巴鲁 Impreza 22B-STI。**
 ```
 
 ## 7.5 标定与识别层（运行期怎么用）

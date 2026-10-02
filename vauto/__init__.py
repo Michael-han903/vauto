@@ -83,6 +83,10 @@ _EXPORTS: Dict[str, str] = {
     "signature_distance": "vision",
     "mean_abs_diff": "vision",
     "wait_stable": "vision",
+    # calib（读标定产物、装配检测器）
+    "load_calibration": "calib",
+    "build_detectors": "calib",
+    "calibration_table": "calib",
     # input
     "InputSimulator": "input_sim",
     "resolve_key": "input_sim",
