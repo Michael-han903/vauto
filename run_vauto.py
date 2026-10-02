@@ -46,6 +46,8 @@ def parse_args(argv=None):
     p.add_argument("--config", type=str, default="", help="从 JSON 读配置")
     p.add_argument("--save-config", type=str, default="", help="把当前配置写出来供你改")
     p.add_argument("--no-car-check", action="store_true", help="跳过「当前车是 22B」的校验")
+    p.add_argument("--enter-event", action="store_true",
+                   help="跑 A 之前自动进赛事（主菜单 → 创意中心 → EventLab → 搜索共享代码）")
     p.add_argument("--probe", action="store_true",
                    help="判据探针：只抓帧打分、绝不按键；你自己翻页面，翻完 Ctrl+C 看汇总")
     p.add_argument("--probe-seconds", type=float, default=0.0,
@@ -87,6 +89,7 @@ def main(argv=None) -> int:
     cfg.hotkey = args.hotkey
     cfg.dry_run = not args.live
     cfg.require_car_22b = not args.no_car_check
+    cfg.enter_event = bool(args.enter_event)
 
     if args.save_config:
         from flow.config import save_config

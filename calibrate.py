@@ -97,6 +97,13 @@ TEMPLATE_POSITIVE = {
     # tile_collection（剧情页「收集簿」磁贴）**不在这里自动标定**：正样本只有 1 帧全帧素材
     # （用户截图 entry_01.png），而本工具的闸门要求正/负各 >= 3 帧；阈值已实测后手工登记在
     # templates/manual_thresholds.json（ROI 内 正 1.0000 / 负 max 0.3211，阈值 0.75）。
+    # ---- 进赛事流程（2026-10-02 用户 7 张截图 + 口述序列）----
+    # 这些页面的正样本只有"用户的一张截图"（录屏那段的帧还没法当正面），标定时要配 --min-pos 1。
+    # 只有"搜索面板标题"这一张经得住闸门（正 1.000 / 负 0.392，误报 0）。
+    # 其余 4 张（eventLab 磁贴 / EventLab 黑条 / 代码已填 / 结果卡片）实测被判"余量不足"——
+    # 共性坑：**0.5 粗搜尺度下"黑条+白字/纯色块"会退化成"黑块+白影"，跟别的黑条撞车**
+    # （负样本能到 0.99）。所以进赛事改成"每一步用画面变化当闸门 + 这一步用真判据复核"。
+    "panel_search_title":    ["event_entry/entry_05.png", "event_entry/entry_06.png"],
     "car_current_menu":   ["current_car_22b_menu/*",
                            "menu_vehicle_tab/menu_vehicle_tab_*",     # 用户截图（车辆 tab）
                            "menu_vehicle_tab/dup_*"],                 # 录屏里"车名块正常显示"的帧
@@ -114,7 +121,8 @@ SKIP_BY_DEFAULT = {"example_patch", "selftest_patch", "selftest_patch_half",
                    "menu_select_title", "option_enter_car"}
 
 ROI_MARGIN = 12.0            # 自动 ROI 的外扩像素（全分辨率）
-MIN_FRAMES = 3               # 正/负样本各至少这么多帧才给结论
+MIN_FRAMES = 3               # 负样本至少这么多帧才给结论
+MIN_POS = 3                  # 正样本帧数下限（--min-pos 可放宽到 1；放宽时结论会标注"单帧正面"）
 MIN_POSITIVE_SCORE = 0.60    # 正样本 p05 下限：低于它说明模板在该出现的地方都匹配不上
 MIN_MARGIN = 0.05            # 正样本最低分与负样本最高分之间至少要拉开这么多
 MIN_DETECT_RATE = 0.90       # 阈值处正样本检出率下限
@@ -250,8 +258,8 @@ def rate_at(scores: list[float], threshold: float, above: bool = True) -> float 
     return float(((a >= threshold) if above else (a < threshold)).mean())
 
 
-def decide(pos: dict, neg: dict, pos_scores: list[float], neg_scores: list[float]
-           ) -> tuple[float | None, str, bool]:
+def decide(pos: dict, neg: dict, pos_scores: list[float], neg_scores: list[float],
+           min_pos_frames: int = MIN_FRAMES) -> tuple[float | None, str, bool]:
     """
     给出 (建议阈值, 判定, 是否可用)。
 
@@ -262,8 +270,10 @@ def decide(pos: dict, neg: dict, pos_scores: list[float], neg_scores: list[float
          正负样本分组分错了（某个负样本画面里本来就该有这个元素），或该元素在别处也会出现；
       4. 在选定阈值上实测：检出率 >= 0.90 且误报率 <= 0.10。
     """
-    if pos["n"] < MIN_FRAMES or neg["n"] < MIN_FRAMES:
-        return None, f"样本不足（正/负各需 >= {MIN_FRAMES} 帧）", False
+    if pos["n"] < min_pos_frames or neg["n"] < MIN_FRAMES:
+        # 正样本帧数下限可用 --min-pos 放宽（只在"该元素只有截图能当正面"时用，结论要标注）
+        return None, (f"样本不足（正需 >= {min_pos_frames} 帧、负需 >= {MIN_FRAMES} 帧；"
+                      f"实际 正 {pos['n']} / 负 {neg['n']}）"), False
 
     if pos["p05"] < MIN_POSITIVE_SCORE:
         return None, (f"不可用（正样本 p05 仅 {pos['p05']:.3f} < {MIN_POSITIVE_SCORE}："
@@ -348,7 +358,7 @@ def calibrate_one(tpl: Path, index: dict[str, list[Path]], coarse: FrameCache, f
     pos_scores, pos_centers, ms = score_frames(matcher, raw, pos_files, fine, region=use_region)
     neg_scores, _, ms_neg = score_frames(matcher, raw, neg_files, fine, region=use_region)
     pos, neg = summarize(pos_scores), summarize(neg_scores)
-    thr, verdict, usable = decide(pos, neg, pos_scores, neg_scores)
+    thr, verdict, usable = decide(pos, neg, pos_scores, neg_scores, min_pos_frames=MIN_POS)
 
     # 第 1 段没拿到 ROI 但第 2 段可用时，用第 2 段的命中位置补一个
     if usable and roi is None:
@@ -395,12 +405,16 @@ def main(argv=None) -> int:
     p.add_argument("--scale", type=float, default=1.0, help="精确标定尺度（运行期必须一致，默认 1.0）")
     p.add_argument("--coarse-scale", type=float, default=0.5, help="粗搜 ROI 用的尺度（默认 0.5）")
     p.add_argument("--pos-per-scene", type=int, default=12, help="每个正样本场景最多取多少帧")
+    p.add_argument("--min-pos", type=int, default=3,
+                   help="正样本帧数下限（默认 3；=1 表示允许「只有一张截图当正面」，结论会标注是弱证据）")
     p.add_argument("--neg-per-scene", type=int, default=8, help="每个负样本场景最多取多少帧")
     p.add_argument("--full-frame", action="store_true", help="不用 ROI，全帧评分（慢 10 倍，排查用）")
     p.add_argument("--json", type=str, default=str(TEMPLATES / "thresholds.json"), help="阈值输出 JSON")
     p.add_argument("--report", type=str, default="", help="同时输出 markdown 报告")
     p.add_argument("--all", action="store_true", help="连自检素材(example_patch/selftest_*)一起标定")
     args = p.parse_args(argv)
+    global MIN_POS
+    MIN_POS = max(1, int(args.min_pos))          # --min-pos 1 = 允许「只有一张截图当正面」
 
     if not TEMPLATES.is_dir():
         print("[!] templates/ 不存在，先裁剪模板")

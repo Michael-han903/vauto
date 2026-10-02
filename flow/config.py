@@ -43,6 +43,17 @@ class RunConfig:
     ack_timeout: float = 8.0            # 按 Esc 后确认"已离开结算"的超时
     watchdog_idle: float = 180.0        # 画面连续多久没变就认为卡住（秒，0=关闭）
 
+    # ---- 进赛事（2026-10-02 用户口述序列 + 7 张截图；见 docs/业务实测要点.md 第 6 节）----
+    # 主菜单(剧情页) → 点「创意中心」标签 → Enter(EventLab) → ↓ → Enter(参加挑战)
+    #   → Backspace(搜索面板) → ↑ → Enter(共享代码) → 输入代码 → Enter → ↓ → Enter(确认)
+    #   → 等结果卡片 → Enter(进入挑战)
+    enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
+    tab_creativity_click: Tuple[int, int] = (2110, 470)   # 【实测】主菜单「创意中心」标签中心
+    share_code: str = "161047605"                          # 【实测】挑战共享代码
+    code_clear_backspaces: int = 12                        # 输入前先退格清空（防拼成两遍代码）
+    search_timeout: float = 30.0                           # 等搜索结果卡片的超时
+    entry_load_timeout: float = 150.0                      # 进赛事后的加载超时（实测约 1 分钟）
+
     # ---- B：刷技能点 ----
     tab_vehicle_click: Tuple[int, int] = (1390, 460)   # 【实测】主菜单「车辆」标签（鼠标可点）
     unlock_key: str = "y"               # 【实测】精通页 [Y] 解锁全部

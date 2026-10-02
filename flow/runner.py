@@ -57,6 +57,7 @@ DETECTORS = (
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
     "car_current_garage",                                   # 当前车辆是 22B（车库版式）
     "tile_collection",                                      # 在不在主菜单剧情页（与当前车无关）
+    "panel_search_title",                                   # 进赛事：搜索面板已打开
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -697,6 +698,102 @@ class Runner:
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
 
+    # ---------------- 进赛事（自动开局）---------------- #
+    def _do_step(self, action, note: str, timeout: float = 8.0) -> bool:
+        """执行一步，并确认「画面按预期变了」。返回 False = 这一步没生效。
+
+        为什么不每步都用模板：进赛事是一串固定按键，每一步的预期效果就是一次翻页/弹层；
+        而"画面有没有变"用分块最大差就能可靠判出来（跟换车验证同款指标，实测灵敏度足够）。
+        另有一个坑：黑条+白字那种模板在 0.5 粗搜尺度下会退化成"黑块+白影"，跟别的黑条撞车
+        （实测负样本 0.99 被判不可用）—— 所以这里能不靠模板就不靠。
+        """
+        if self.cfg.replay:
+            action()
+            return True
+        before = self.frame()
+        action()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.sleep(0.25)
+            cur = self.frame()
+            score = block_max_abs_diff(before, cur, blocks=self.cfg.nav_change_blocks)
+            if score >= self.cfg.nav_change_threshold:
+                self.log.event("step_ok", note=note, change=round(score, 1))
+                return True
+        self.log.event("step_no_change", note=note)
+        print(f"  [!] 「{note}」这一步画面没有变化（可能没生效）")
+        return False
+
+    def _type_text(self, text: str, note: str = "") -> None:
+        """逐字符输入（pynput 走 KeyCode.from_char）。用于共享代码这种纯数字输入框。"""
+        self.s.stop.check()
+        self.log.event("type_text", text=text, note=note, dry=self.cfg.dry_run)
+        if self.cfg.dry_run:
+            print(f"  [dry-run] 本应输入 {text!r}  ({note})")
+            return
+        for ch in text:
+            self.s.sim.tap_key(ch)
+            self.sleep(0.06)
+
+    def enter_event(self) -> bool:
+        """从主菜单自动进赛事（用户口述序列，见 docs/业务实测要点.md 第 6 节）。
+
+        闸门设计：
+        * 翻页类步骤用 `_do_step`（"画面变了"）—— 不依赖每个页面都裁出可用模板；
+        * 搜索面板那一步用真判据 `panel_search_title` 复核（标定过：正 1.000 / 负 0.392）；
+        * 对不上就存证据图 + 停下，**绝不盲按**（盲按会把游戏带到未知状态）。
+        """
+        cfg = self.cfg
+        print("\n===== 自动进赛事：创意中心 → EventLab → 参加挑战 → 搜索共享代码 =====")
+        # 0) 要先在菜单系统里
+        in_menu, sc = self._in_menu_now()
+        if not in_menu:
+            print("  [进赛事] 当前不在菜单里 → 先按 Esc 试着回主菜单")
+            self.press("esc", "回主菜单")
+            self.sleep(cfg.esc_dwell)
+            in_menu, sc = self._in_menu_now()
+            if not in_menu:
+                shot = self._save_evidence(self.frame(), "enter_no_menu")
+                print(f"  [!] 还是不在菜单里，放弃自动进赛事（证据: {shot}）")
+                self.log.event("enter_no_menu", scores=sc, shot=shot)
+                return False
+        # 1) 点「创意中心」标签（固定坐标，实测 x≈2110 y≈470）
+        self._do_step(lambda: self.click_client(cfg.tab_creativity_click, "创意中心 tab"),
+                      "点「创意中心」标签")
+        # 2) Enter 进 EventLab → ↓ 到「参加挑战」→ Enter
+        self._do_step(lambda: self.press(cfg.confirm_key, "进入 EventLab"), "进入 EventLab")
+        self.press("down", "移到「参加挑战」")          # 光标一格，不设闸门
+        self.sleep(0.3)
+        self._do_step(lambda: self.press(cfg.confirm_key, "进入「参加挑战」"), "进入「参加挑战」")
+        # 3) Backspace 打开搜索面板（这一步有真判据复核）
+        self._do_step(lambda: self.press("backspace", "打开搜索面板"), "打开搜索面板")
+        if not self.cfg.replay and self._wait_for("panel_search_title", 6.0) is None:
+            shot = self._save_evidence(self.frame(), "enter_no_search_panel")
+            print(f"  [!] 搜索面板没出现（证据: {shot}）→ 放弃进赛事")
+            self.log.event("enter_failed", step="search_panel", shot=shot)
+            return False
+        # 4) ↑ 到「共享代码」→ Enter → 输代码（已填就别重输）→ Enter → ↓ → Enter
+        self.press("up", "移到「共享代码」行")
+        self.press(cfg.confirm_key, "进入代码输入")
+        print("  [进赛事] 输入共享代码（先退格清空，防拼成两遍）")
+        for _ in range(int(cfg.code_clear_backspaces)):
+            self.press("backspace", "清空输入框")
+        self._type_text(cfg.share_code, "输入共享代码")
+        self.press(cfg.confirm_key, "确认代码文本")
+        self.press("down", "移到「确认」")
+        self._do_step(lambda: self.press(cfg.confirm_key, "确认（执行搜索）"), "执行搜索")
+        # 5) 等结果 → Enter 进挑战 → 等加载
+        self.sleep(1.5 if self.cfg.replay else 2.5)
+        self.press(cfg.confirm_key, "进入挑战（结果列表里第一张就是目标赛事）")
+        print("  [进赛事] 已按 Enter 进赛事，等加载（实测约 1 分钟）…")
+        if not self.cfg.replay:
+            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                        timeout=cfg.entry_load_timeout, settle=1.5, scale=0.5, poll=0.3)
+        print("  [进赛事] 加载结束 ✅")
+        self.log.event("event_entered", shot=self._save_evidence(self.frame(), "event_entered"))
+        self.stats["events_entered"] = self.stats.get("events_entered", 0) + 1
+        return True
+
     # ---------------- 总入口 ---------------- #
     def run(self) -> dict:
         cfg = self.cfg
@@ -709,6 +806,12 @@ class Runner:
             print("提示：随时按 F1 立即中止；目标窗口不在前台时全部动作会自动暂停。")
         try:
             if cfg.a_enabled:
+                if cfg.enter_event:
+                    # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
+                    if not self.enter_event():
+                        print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
+                        if not cfg.dry_run:
+                            return {"stopped": "enter_event_failed", **self.stats}
                 if cfg.require_car_22b and not self.check_car_22b():
                     print("[!] 当前车辆校验未通过：请手动把车换成 22B 再跑（或 --no-car-check）")
                     if not cfg.dry_run:
