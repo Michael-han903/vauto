@@ -464,26 +464,35 @@ class Runner:
         return {"cars_done": self.stats["cars_done"], "phase": "spend"}
 
     def _in_menu_now(self, frame: Optional[np.ndarray] = None) -> Tuple[bool, dict]:
-        """当前是否在「菜单系统」里（主菜单任意标签 / 我的车辆列表 / 精通页）。
+        """当前是否在「菜单系统」里（主菜单任意标签 / 我的车辆列表 / 精通页 / 弹窗）。
 
         实测：上车后会回到**主世界（自由驾驶）**，此时左上角没有菜单那块车名面板
         → 必须先按 Esc 才出现主菜单。所以"在不在菜单里"是决定按什么键的关键。
+
+        判定只用**标定过硬**的四个判据（都在菜单里实测 1.000）：
+        car_current_menu / tile_mastery / page_title_garage / page_title_mastery。
+        其余的判据（hint_esc_retry / panel_result / popup_confirm / hint_esc_back …）
+        只打进日志，**不参与判定** —— 它们在非菜单场景下也有分数，掺进来会误判。
         """
         frame = self.frame() if frame is None else frame
+        probe_names = ("car_current_menu", "tile_mastery", "tile_change_car",
+                       "page_title_garage", "page_title_mastery", "hint_esc_retry",
+                       "panel_result", "popup_confirm", "popup_no_resource",
+                       "hint_esc_back", "hint_unlock_all", "car_current_garage",
+                       "menu_select_title")
         sc = {}
-        for nm in ("car_current_menu", "tile_mastery", "page_title_garage",
-                   "page_title_mastery", "hint_esc_back"):
+        for nm in probe_names:
             d = self.s.dets.get(nm)
             if d is None:
                 continue
             score, _ = d.probe(frame)
             sc[nm] = round(score, 3)
-        menu_det = self.s.dets.get("car_current_menu")
-        in_menu = bool(menu_det is not None
-                       and sc.get("car_current_menu", 0.0) >= menu_det.threshold)
-        in_menu = in_menu or sc.get("tile_mastery", 0.0) >= self.s.dets["tile_mastery"].threshold
-        in_menu = in_menu or sc.get("page_title_garage", 0.0) >= \
-            self.s.dets["page_title_garage"].threshold
+        in_menu = False
+        for nm in ("car_current_menu", "tile_mastery", "page_title_garage",
+                   "page_title_mastery"):
+            d = self.s.dets.get(nm)
+            if d is not None and sc.get(nm, 0.0) >= d.threshold:
+                in_menu = True
         return in_menu, sc
 
     def _ensure_vehicle_tab(self, after_load: bool = False) -> bool:
@@ -496,8 +505,9 @@ class Runner:
         det_tab = self.s.dets["tile_mastery"]
         if after_load and not self.cfg.replay:
             self.press("esc", "上车后回到主世界 → Esc 打开主菜单")
-            self.sleep(0.8)
-        for attempt in range(4):
+            self.sleep(self.cfg.esc_dwell)
+        seen_states = set()
+        for attempt in range(5):
             frame = self.frame()
             tab_score, _ = det_tab.probe(frame)
             if tab_score >= det_tab.threshold:
@@ -507,11 +517,17 @@ class Runner:
             in_menu, sc = self._in_menu_now(frame)
             self.log.event("ensure_tab_probe", attempt=attempt, after_load=after_load,
                            in_menu=in_menu, scores=sc)
+            # 证据：把"没见过的画面"存下来（最多 3 张）—— 失败时能直接看到当时是什么界面
+            sig = tuple(sorted((k, v) for k, v in sc.items() if v >= 0.3))
+            if sig not in seen_states and len(seen_states) < 3:
+                seen_states.add(sig)
+                shot = self._save_evidence(frame, f"tab_probe_a{attempt}")
+                self.log.event("tab_probe_shot", attempt=attempt, shot=shot)
             if in_menu:
                 # 在菜单里但不在车辆页（别的标签页 / 我的车辆列表 / 精通页）
                 if sc.get("page_title_garage", 0.0) >= self.s.dets["page_title_garage"].threshold:
                     self.press("esc", "从「我的车辆」列表退回")
-                    self.sleep(1.2)
+                    self.sleep(self.cfg.esc_dwell)
                 else:
                     print(f"  [B] 在菜单里但不在车辆页 → 点「车辆」标签  {sc}")
                     self.click_client(self.cfg.tab_vehicle_click, "车辆 tab")
@@ -523,7 +539,7 @@ class Runner:
                 # 主世界（自由驾驶）/ 加载中 → Esc 才会出现主菜单（这是 after_load 的正常路径）
                 print(f"  [B] 不在菜单里（主世界/加载中）→ 按 Esc 打开主菜单  {sc}")
                 self.press("esc", "自由驾驶 → 主菜单")
-                self.sleep(1.2)
+                self.sleep(self.cfg.esc_dwell)
         self.log.event("vehicle_tab_fail", after_load=after_load)
         return False
 

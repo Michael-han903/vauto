@@ -50,6 +50,7 @@ class RunConfig:
     max_cars_per_session: int = 8       # 一次 B 会话最多处理几台车（真正的退出是点数不足）
     nav_budget: int = 24                # 走格子步数预算（见 flow/nav.py）
     nav_max_fail: int = 3
+    esc_dwell: float = 2.0             # 按 Esc 之后等画面切过去的时间（实测 ~1.5 s 才有变化）
     page_timeout: float = 20.0          # 等某个页面出现的超时（实测页内切换约 2 s，留足）
     # 【实测 2026-10-02 探针】点「上车」后会进入 13~18 秒「所有判据都不命中」的加载窗口
     # （无判据命中是**正常现象**，不是异常）。所以换车/加载的等待要 ≥ 60 s，兜底逻辑也不能
