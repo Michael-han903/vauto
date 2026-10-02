@@ -520,6 +520,17 @@ class Runner:
             elif state == "no_points":
                 self.stats["no_points"] += 1
                 print("  [B] 技能点不足 → 该回 A 刷点了")
+                # 【2026-10-03 用户口径】"技能点不够的话是要切换到斯巴鲁22B去挑战里面跑技能点…
+                # 跑完挑战之后你要重新重头再来挑选未收藏车辆"：
+                # * 这台车**不加收藏**（它还没解锁完，收藏只留给"全解锁"的车）；
+                # * 清空本次会话的"弄过/跳过"记忆 → 下一轮 B 从列表第一屏重新挑，
+                #   这台没 ♥ 的车自然又会被挑到，接着解锁（刚跑完挑战，点数满了）。
+                self._seen_cars = []
+                self._seed_once = False
+                self._unreachable = []
+                self._all_cars_seen = False
+                self.log.event("b_reset_after_no_points",
+                               note="点数不足：清空跳过记忆，跑完挑战从头重新挑")
                 self._leave_mastery()
                 break
             else:
@@ -1099,7 +1110,11 @@ class Runner:
         # 以后的最左侧第一辆就不是了"。所以这里只在**第一次**进列表时，把"光标所在那格"
         # 记成已处理（那一刻它就是当前车辆）；之后一律靠 指纹 + ♥ 判断，绝不假设位置。
         # （另外当前车辆那格的「选择操作」菜单里没有「上车」项，见 _enter_car_now 的复核。）
-        if not self._seen_cars:
+        # 【2026-10-03 用户口径】"只有最开始第一次进入车辆列表的时候的第一辆才是当前车辆，
+        # 以后的最左侧第一辆就不是了" → 种子**一辈子只种一次**，用一个独立标志记着
+        # （不能再用 `if not self._seen_cars`：点数不足回 A 刷点时会清空这个集合，
+        #   清空后旧写法会把"以后的最左格"又误当成当前车辆）。
+        if not getattr(self, "_seeded_once", False):
             _f0 = self.frame()
             _t0 = self._grid_tiles(_f0)
             _c0 = self._cursor_cell(_f0, _t0)
@@ -1110,6 +1125,7 @@ class Runner:
                         if _fp0 is not None:
                             self._remember_done(_fp0)
                             self._seed_once = True
+                            self._seeded_once = True
                             self.log.event("car_fp_seed", cell=list(_c0),
                                            note="首次进列表：光标那格=当前车辆，跳过")
                             print(f"  [找] 首次进列表，光标在 ({_r},{_c}) = 当前车辆 → 记为已处理")
