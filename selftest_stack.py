@@ -48,9 +48,22 @@ out = capmod._bgra_to_bgr(_Fake())
 ck("BGRA->BGR 通道顺序正确（红 -> BGR(0,0,255)）",
    tuple(out[0, 0]) == (0, 0, 255), f"pixel={tuple(out[0,0])}")
 
-print("== 2) matching: 从真实抓帧中裁剪模板再找回来 ==")
+print("== 2) matching: 从确定性测试图上裁剪模板再找回来 ==")
+# 【踩过的坑】这里原来用 capture_monitor(1) 的**实时屏幕**当测试图 →
+# 屏幕内容一变（比如新素材入库、游戏切页面）断言就会莫名其妙地失败，
+# 属于"测试输入不可复现"的缺陷。改成种子随机的合成图：自包含、可复现、不依赖环境。
+_rng = np.random.default_rng(20261002)
+frame = np.full((600, 900, 3), 30, np.uint8)
+for _ in range(120):                      # 低频色块（缩放后仍可辨认，且非周期 → 不会多个等高峰）
+    bx, by = int(_rng.integers(0, 880)), int(_rng.integers(0, 580))
+    bw, bh = int(_rng.integers(24, 120)), int(_rng.integers(24, 90))
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh),
+                  tuple(int(c) for c in _rng.integers(40, 255, 3)), -1)
+cv2.circle(frame, (375, 280), 22, (0, 0, 255), -1)          # 裁窗内的唯一标记，保证匹配无歧义
+cv2.line(frame, (330, 300), (420, 300), (255, 255, 255), 5)
+cv2.line(frame, (375, 245), (375, 315), (0, 255, 0), 3)
 h, w = frame.shape[:2]
-x0, y0 = int(w * 0.35), int(h * 0.40)
+x0, y0 = 315, 240
 patch = frame[y0:y0 + 80, x0:x0 + 120].copy()
 tmpdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 os.makedirs(tmpdir, exist_ok=True)

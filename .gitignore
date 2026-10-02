@@ -11,3 +11,5 @@ __pycache__/
 # 临时探针脚本/中间产物（约定：以 _ 开头）
 _*
 logs/
+templates/selftest_*.png
+templates/自检_*.png

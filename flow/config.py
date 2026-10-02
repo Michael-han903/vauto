@@ -37,7 +37,7 @@ class RunConfig:
     retry_key: str = "esc"              # 【实测】结算画面 [Esc] 重试
     leave_event_key: str = "enter"      # 【实测】结算画面 [Enter] 继续（离开赛事）
     round_timeout: float = 840.0        # 【实测】一轮约 542 s，留到 14 分钟
-    round_settle_before: float = 45.0   # Esc 之后重新加载的等待（用户口述约 1 分钟）
+    round_settle_before: float = 90.0   # 【实测】Esc 重试后要重新加载（用户口述约 1 分钟）→ 超时给足
     poll: float = 0.5                   # 轮询间隔
     max_polls_per_round: int = 0        # 0 = 由 round_timeout/poll 推算；回放时设小值
     ack_timeout: float = 8.0            # 按 Esc 后确认"已离开结算"的超时
@@ -50,8 +50,11 @@ class RunConfig:
     max_cars_per_session: int = 8       # 一次 B 会话最多处理几台车（真正的退出是点数不足）
     nav_budget: int = 24                # 走格子步数预算（见 flow/nav.py）
     nav_max_fail: int = 3
-    page_timeout: float = 12.0          # 等某个页面出现的超时
-    car_change_timeout: float = 25.0    # 换车后等加载完成（含过场）
+    page_timeout: float = 20.0          # 等某个页面出现的超时（实测页内切换约 2 s，留足）
+    # 【实测 2026-10-02 探针】点「上车」后会进入 13~18 秒「所有判据都不命中」的加载窗口
+    # （无判据命中是**正常现象**，不是异常）。所以换车/加载的等待要 ≥ 60 s，兜底逻辑也不能
+    # 把"没命中任何判据"当成"未知画面"来干预 —— 必须用"画面是否还在变化"来区分加载/卡死。
+    car_change_timeout: float = 60.0    # 换车后等加载完成（含过场；实测 18.5 s 最长一次）
 
     # ---- 走法开关 ----
     phase: str = "both"                 # farm / spend / both

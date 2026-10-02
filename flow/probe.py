@@ -140,13 +140,16 @@ def probe_loop(stack: Stack,
         best = "nan" if s["best"] == float("-inf") else f"{s['best']:.3f}"
         if s["passes"] and s["best"] >= s["threshold"] + 0.10:
             verdict = "✅ 稳（超阈值 0.10 以上）"
+        elif s["passes"] and s["best"] >= s["threshold"] + 0.05:
+            verdict = "✅ 可用（余量 0.05~0.10）"
         elif s["passes"]:
-            verdict = "⚠️ 擦边（刚过阈值，考虑降阈值或换模板）"
+            verdict = "⚠️ 擦边（余量 < 0.05，考虑降阈值或换模板）"
         else:
-            verdict = "❌ 本次没出现过（可能是你还没翻到那一页）"
+            verdict = "❌ 本次没出现过（你还没翻到那一页？）"
         shot = f"  图: {s['roi_shot']}" if s["roi_shot"] else ""
         print(f"  {s['name']:24s} 阈值 {s['threshold']:.3f}  最高 {best:>5s}  "
               f"通过 {s['passes']:4d} 帧  {verdict}{shot}")
     print(f"\n共看 {frames} 帧（{time.monotonic() - t0:.0f}s）")
+    print("提示：换车/加载期间（实测 13~18 秒）**所有判据都不命中是正常的**，别当成 bug。")
     print("把上面这段贴给我，我就能复核那些「手工推定」的阈值。")
     return stat

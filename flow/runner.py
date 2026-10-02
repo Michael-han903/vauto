@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
+import cv2
 import numpy as np
 
 from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSimulator,
@@ -326,6 +327,18 @@ class Runner:
         x, y, w, h = CAR_NAME_ROI
         return frame[y:y + h, x:x + w]
 
+    def _save_evidence(self, frame: np.ndarray, tag: str) -> str:
+        """存下"出问题那一刻"的画面 —— 无人值守跑挂后能回答"当时停在哪儿"（存到 logs/）。"""
+        try:
+            d = Path(self.cfg.log_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            path = d / f"{tag}_{ts}.png"
+            cv2.imencode(".png", frame)[1].tofile(str(path))
+            return str(path)
+        except Exception as exc:
+            return f"(存图失败: {exc})"
+
     # ---------------- A 阶段 ---------------- #
     def phase_farm(self, rounds: int) -> dict:
         print(f"\n===== A 阶段：{rounds} 轮挑战（按住 W → 等结算 → Esc 重试） =====")
@@ -363,7 +376,7 @@ class Runner:
         self.hold(self.cfg.hold_key, "挑战进行中")
         # 3) 轮询结算判据（两个判据每帧都要喂，否则其中一个的连续帧计数会断）
         polls, settle_hit = 0, None
-        last_frame, last_change = None, time.monotonic()
+        last_frame, last_change, idle_warns = None, time.monotonic(), 0
         while polls < self.cfg.max_polls_per_round:
             polls += 1
             try:
@@ -376,13 +389,21 @@ class Runner:
             if ha or hb:
                 settle_hit = ha or hb
                 break
-            # 卡死看门狗（只告警，不动作）
+            # 卡死看门狗：画面 180s 没变告警一次；累计 3 次（约 9 分钟）→ 存证据 + 中止本轮
+            # 注意：这与「加载期没命中任何判据」是两码事 —— 加载时画面在变，不会触发这里。
             if self.cfg.watchdog_idle > 0 and not self.cfg.replay:
                 if last_frame is None or mean_abs_diff(last_frame, frame, gray=True) > 2.0:
-                    last_frame, last_change = frame, time.monotonic()
+                    last_frame, last_change, idle_warns = frame, time.monotonic(), 0
                 elif time.monotonic() - last_change > self.cfg.watchdog_idle:
-                    print(f"  [!] 画面已 {self.cfg.watchdog_idle:.0f}s 无变化，可能卡住")
-                    self.log.event("watchdog_idle")
+                    idle_warns += 1
+                    shot = self._save_evidence(frame, f"watchdog{idle_warns}")
+                    self.log.event("watchdog_idle", count=idle_warns, shot=shot)
+                    print(f"  [!] 画面已 {self.cfg.watchdog_idle:.0f}s 无变化"
+                          f"（第 {idle_warns}/3 次）证据: {shot}")
+                    if idle_warns >= 3:
+                        self.log.event("watchdog_abort", shot=shot)
+                        self.release_all("卡死中止")      # 必须先松手再返回：否则 W 会一直按着
+                        return "watchdog"
                     last_change = time.monotonic()
             self.sleep(self.cfg.poll)
         # 4) 松手（一定要先松，避免 W 和 Esc 同时按着）
