@@ -701,19 +701,6 @@ class Runner:
             return float("nan"), None
         return det.probe(frame)
 
-    def _list_next(self) -> bool:
-        """车格列表里往右走一格（把视野外的车拉进来）。返回"画面真的动了没有"。"""
-        before = self._list_roi(self.frame())
-        self.press("right", "列表里往右一格")
-        self.sleep(0.55)
-        after = self._list_roi(self.frame())
-        diff = block_max_abs_diff(before, after, blocks=self.cfg.nav_change_blocks)
-        moved = float(diff) >= self.cfg.nav_change_threshold
-        self.log.event("set_22b_step", diff=round(float(diff), 1), moved=bool(moved))
-        if not moved:
-            print(f"  [走] 没动（分块差 {diff:.1f} < {self.cfg.nav_change_threshold}）→ 到头了")
-        return bool(moved)
-
     def _grid_cell_of(self, hit) -> Tuple[int, int]:
         """车格位置 → (第几列, 第几行)。间距/原点都是实机量出来的，不是猜的。"""
         gx, gy = self.cfg.grid_origin
@@ -752,7 +739,7 @@ class Runner:
         """
         cfg = self.cfg
         print("\n===== 换回 22B：更换车辆 → 找 IMPRESA 22B-STI → 上车 =====")
-        if self.check_car_22b():
+        if self.check_car_22b(log_fail=False):
             print("  [=] 当前已经是 22B，不用换")
             self.log.event("set_22b_skip", reason="already_22b")
             return True
@@ -764,24 +751,51 @@ class Runner:
             print("  [!] 换车列表没打开")
             self.log.event("set_22b_fail", where="list_not_open")
             return False
-        self.sleep(1.2)
-        for attempt in range(1, cfg.car_find_tries + 1):
+        # 【一列一列扫，直到**真的走不动**才认输】
+        # 2026-10-02 实测教训：用户车库几千台车、三四百列，而我只给了 12 列预算 →
+        # 日志 set_22b_scan ×12 score=null → set_22b_fail where=exhausted，可那时
+        # 列表每一步都还在动（diff≈149）。所以：预算给到 450 列，真正的结束条件是
+        # "连续 2 次画面没变"（= 列表到头了）。
+        # 速度：每轮只抓 1 帧（同帧既用来找 22B，也用来判断列表动没动），约 0.6~0.7s/列，
+        # 扫满 450 列约 5 分钟 —— 这个代价只在"B 换过车之后"付一次。
+        self.sleep(1.0)
+        prev = self._list_roi(self.frame())
+        went, stall, best = 0, 0, 0.0
+        tries_on_found = 0      # 已经定位到 22B 那格、但没换成功了几次（防死循环）
+        stop = "budget"         # 为什么停下来（写进日志，省得下次还要猜）
+        while went < cfg.car_find_tries and stall < 2:
             frame = self.frame()
             score, hit = self._probe_loc("car_tile_22b", frame)
-            self.log.event("set_22b_scan", attempt=attempt, score=None if score != score else round(score, 3))
-            if hit is None or score != score or score < self.s.dets["car_tile_22b"].threshold:
-                print(f"  [找] 第 {attempt} 次：视野里没有 22B（{score:.3f}）→ 往右走一格")
-                if not self._list_next():
-                    break
+            if score != score:
+                score = 0.0
+            best = max(best, score)
+            if hit is None or score < self.s.dets["car_tile_22b"].threshold:
+                # 视野里没有 22B → 往右走一格，同时看画面到底动没动
+                if went % cfg.car_scan_report == 0:
+                    print(f"  [找] 已扫 {went} 列 | 本次最高 {best:.3f}"
+                          f"（阈值 {self.s.dets['car_tile_22b'].threshold}）")
+                    self.log.event("set_22b_scan", went=went, best=round(best, 3))
+                self.press("right", "列表里往右一格")
+                self.sleep(0.35)
+                after = self._list_roi(self.frame())
+                diff = float(block_max_abs_diff(prev, after, blocks=cfg.nav_change_blocks))
+                prev = after
+                went += 1
+                if diff < cfg.nav_change_threshold:
+                    stall += 1
+                    self.log.event("set_22b_end_check", went=went, diff=round(diff, 1), stall=stall)
+                else:
+                    stall = 0
                 continue
+            # ---- 找到 22B 那格了 ----
             pt = (int(hit.center[0]), int(hit.center[1]))
-            print(f"  [找] 第 {attempt} 次：22B 在 {pt}（{score:.3f}）→ 点它")
-            self.log.event("set_22b_found", attempt=attempt, at=list(pt), score=round(score, 3))
+            self.log.event("set_22b_found", went=went, at=list(pt), score=round(score, 3))
+            print(f"  [找] 第 {went} 列找到 22B：{pt}（{score:.3f}）→ 点它")
             self.click_client(pt, "点 22B 车格")
             self.sleep(0.9)
             if self._enter_car_and_verify(f"鼠标点{pt}"):
                 return True
-            # 鼠标点没生效 → 用方向键数格子走过去（用户手动就是这么走的）
+            # 鼠标点没生效 → 用方向键按格数走过去（用户手动就是这么走的）
             col, row = self._grid_cell_of(hit)
             print(f"  [找] 改用方向键：右 {col} 次、下 {row} 次")
             self.log.event("set_22b_arrows", col=col, row=row)
@@ -794,13 +808,28 @@ class Runner:
             self.sleep(0.8)
             if self._enter_car_and_verify(f"方向键{col},{row}"):
                 return True
+            # 两条路都没换成（比如鼠标点选不中、格距算错）→ 记一次失败
+            tries_on_found += 1
+            self.log.event("set_22b_try_failed", at=list(pt), n=tries_on_found)
+            if tries_on_found >= 3:
+                print("  [!] 3 次定位到 22B 那格都没换成功 → 停下（证据图能看出卡在哪一步）")
+                stop = "tries_on_found"
+                break
+            # 还愿意再试：把这一格让过去，继续往右扫（换一格再试）
+            went += 1
+            self.press("right", "往右一格（换一格再试）")
+            self.sleep(0.35)
+            prev = self._list_roi(self.frame())
+        if stall >= 2:
+            stop = "list_end"
+        print(f"  [找] 扫了 {went} 列，停因={stop}（连续 {stall} 次画面没变）最高分 {best:.3f}")
         shot = self._save_evidence(self.frame(), "set_22b_failed")
         print(f"  [!] 没换成 22B → 证据 {shot} → 停下（不盲换）")
-        self.log.event("set_22b_fail", where="exhausted", shot=shot)
+        self.log.event("set_22b_fail", where=stop, went=went, best=round(best, 3), shot=shot)
         self.stats["errors"] = self.stats.get("errors", 0) + 1
         return False
 
-    def check_car_22b(self) -> bool:
+    def check_car_22b(self, log_fail: bool = True) -> bool:
         """
         A 之前校验当前车辆是 1998 斯巴鲁 Impreza 22B-STI（主菜单或车库两种版式各一个判据）。
         命中任意一个即认为通过。
@@ -817,6 +846,8 @@ class Runner:
                 return True
         # 没命中：区分"人不在这两页"还是"在菜单里但开的不是 22B"（后者才是真问题）
         in_menu, sc = self._in_menu_now()
+        if not log_fail:
+            return False          # 预检用（set_car_22b 开头）——"当前不是 22B"是已知前提，别记成失败
         if in_menu:
             print("  [!] 你在菜单里，但**当前车辆不是 22B** —— 面板判据分数："
                   f"menu={sc.get('car_current_menu')} (阈值 "

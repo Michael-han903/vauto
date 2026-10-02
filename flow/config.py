@@ -49,7 +49,9 @@ class RunConfig:
     #   → Backspace(搜索面板) → ↑ → Enter(共享代码) → 输入代码 → Enter → ↓ → Enter(确认)
     #   → 等结果卡片 → Enter(进入挑战)
     # ---- 回 22B（B 之后回 A 的前提）----
-    car_find_tries: int = 12            # 在车库里找 22B 最多走/翻多少次
+    car_find_tries: int = 450           # 找 22B 最多往右扫多少列（用户车库几千台车/三四百列，
+                                        # 必须扫到"列表真的走不动"才认输；12 列那次是错的）
+    car_scan_report: int = 25           # 每扫多少列在终端报一次进度
     list_search_roi: Tuple[int, int, int, int] = (760, 380, 3080, 1560)   # 车格列表区域
     brand_next_click: Tuple[int, int] = (3621, 354)   # 品牌栏「▶ 下一个品牌」（找 22B 的兜底手段）
     grid_origin: Tuple[int, int] = (800, 408)          # 「我的车辆」车格首格左上角（实机量）
