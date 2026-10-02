@@ -4,6 +4,18 @@
   "scale": 1.0,
   "generated_at": "2026-10-02T20:0:00",
   "templates": {
+    "tile_collection": {
+      "file": "templates/tile_collection.png",
+      "desc": "主菜单「剧情」页左下磁贴上的「收集簿」白字 —— 用来判断「我在不在主菜单」（与当前车辆无关；换车后仍然有效，这正是它存在的理由）",
+      "threshold": 0.75,
+      "release_threshold": 0.67,
+      "roi": [520, 1100, 380, 180],
+      "confirm_frames": 2,
+      "neg_max_measured": 0.3211,
+      "neg_frames": 125,
+      "pos_note": "正样本只有 1 帧全帧素材（用户截图 entry_01.png，ROI 内自匹配 1.0000）。录屏那段主菜单不是剧情页（同一 ROI 内最高 0.3211，前几名全是录屏帧与创意中心页）→ 拿不到第 2、3 帧正样本，而 calibrate.py 的闸门要求正/负各 ≥3 帧，所以登记在这里。阈值上离负样本 max 有 0.43 余量、下离正样本 0.25。",
+      "manual": true
+    },
     "menu_select_title": {
       "file": "templates/menu_select_title.png",
       "desc": "「选择操作」菜单的黄色标题条 —— 判定该菜单是否已弹出",

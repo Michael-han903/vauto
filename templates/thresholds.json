@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T20:03:38",
+  "generated_at": "2026-10-02T21:15:04",
   "scale": 1.0,
   "coarse_scale": 0.5,
   "matcher": {
@@ -7,26 +7,9 @@
     "method": "TM_CCOEFF_NORMED"
   },
   "frames_dir": "golden_frames",
-  "elapsed_seconds": 89.32,
+  "elapsed_seconds": 20.92,
   "last_run": [
-    "btn_retry",
-    "car_current_garage",
-    "car_current_menu",
-    "hint_esc_back",
-    "hint_esc_retry",
-    "hint_unlock_all",
-    "hud_marker",
-    "list_entry",
-    "node_active",
-    "node_grid_anchor",
-    "node_inactive",
-    "page_title_garage",
-    "page_title_mastery",
-    "panel_result",
-    "popup_confirm",
-    "popup_no_resource",
-    "tile_change_car",
-    "tile_mastery"
+    "tile_collection"
   ],
   "templates": {
     "car_current_garage": {
@@ -808,6 +791,84 @@
       "false_positive_rate": 0.0,
       "verdict": "分离良好",
       "usable": true
+    },
+    "tabbar_main": {
+      "name": "tabbar_main",
+      "file": "templates/tabbar_main.png",
+      "size": [
+        1370,
+        80
+      ],
+      "scale": 1.0,
+      "threshold": null,
+      "release_threshold": null,
+      "roi": null,
+      "search": "full_frame",
+      "match_ms": null,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "current_car_22b_menu",
+        "event_entry",
+        "menu_vehicle_tab"
+      ],
+      "pos": {
+        "n": 11,
+        "min": 0.37551790475845337,
+        "p05": 0.377305805683136,
+        "median": 0.42439720034599304,
+        "p95": 0.7149450331926346,
+        "max": 0.9999998807907104
+      },
+      "neg": {
+        "n": 227,
+        "min": 0.029258204624056816,
+        "p05": 0.2956778287887573,
+        "median": 0.397610604763031,
+        "p95": 0.439045849442482,
+        "max": 0.4557458758354187
+      },
+      "detect_rate": null,
+      "false_positive_rate": null,
+      "verdict": "不可用（正样本 p05 仅 0.377 < 0.6：模板在它该出现的地方都匹配不上 —— 裁错区域、尺度不一致，或该元素会变化）",
+      "usable": false
+    },
+    "tile_collection": {
+      "name": "tile_collection",
+      "file": "templates/tile_collection.png",
+      "size": [
+        380,
+        180
+      ],
+      "scale": 1.0,
+      "threshold": null,
+      "release_threshold": null,
+      "roi": null,
+      "search": "full_frame",
+      "match_ms": null,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "event_entry"
+      ],
+      "pos": {
+        "n": 1,
+        "min": 1.0,
+        "p05": 1.0,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 237,
+        "min": -0.18263401091098785,
+        "p05": -0.1566930055618286,
+        "median": 0.05695180222392082,
+        "p95": 0.2373954802751541,
+        "max": 0.329332172870636
+      },
+      "detect_rate": null,
+      "false_positive_rate": null,
+      "verdict": "样本不足（正/负各需 >= 3 帧）",
+      "usable": false
     }
   }
 }

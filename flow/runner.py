@@ -55,7 +55,8 @@ DETECTORS = (
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
-    "car_current_garage",                                   # 当前车辆（车库页）
+    "car_current_garage",                                   # 当前车辆是 22B（车库版式）
+    "tile_collection",                                      # 在不在主菜单剧情页（与当前车无关）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -469,13 +470,16 @@ class Runner:
         实测：上车后会回到**主世界（自由驾驶）**，此时左上角没有菜单那块车名面板
         → 必须先按 Esc 才出现主菜单。所以"在不在菜单里"是决定按什么键的关键。
 
-        判定只用**标定过硬**的四个判据（都在菜单里实测 1.000）：
-        car_current_menu / tile_mastery / page_title_garage / page_title_mastery。
-        其余的判据（hint_esc_retry / panel_result / popup_confirm / hint_esc_back …）
-        只打进日志，**不参与判定** —— 它们在非菜单场景下也有分数，掺进来会误判。
+        判定只用**与当前车辆无关**的判据：
+        - `tile_collection`（剧情页「收集簿」磁贴白字 —— 每次按 Esc 菜单都开在剧情页）
+        - `tile_mastery`（车辆页磁贴）/ `page_title_garage`（我的车辆）/ `page_title_mastery`（精通页）
+        **不要用 `car_current_menu` / `car_current_garage`**：它们是从 22B 的截图裁的，
+        连车图+车名一起记住了，换成别的车只有 ~0.5，会把"人就在主菜单上"误判成"不在菜单里"
+        （2026-10-02 --cars 3 跑挂的根因）。
         """
         frame = self.frame() if frame is None else frame
-        probe_names = ("car_current_menu", "tile_mastery", "tile_change_car",
+        probe_names = ("tile_collection", "car_current_menu",
+                       "tile_mastery", "tile_change_car",
                        "page_title_garage", "page_title_mastery", "hint_esc_retry",
                        "panel_result", "popup_confirm", "popup_no_resource",
                        "hint_esc_back", "hint_unlock_all", "car_current_garage",
@@ -488,8 +492,8 @@ class Runner:
             score, _ = d.probe(frame)
             sc[nm] = round(score, 3)
         in_menu = False
-        for nm in ("car_current_menu", "tile_mastery", "page_title_garage",
-                   "page_title_mastery"):
+        for nm in ("tile_collection", "tile_mastery",
+                   "page_title_garage", "page_title_mastery"):
             d = self.s.dets.get(nm)
             if d is not None and sc.get(nm, 0.0) >= d.threshold:
                 in_menu = True
@@ -668,6 +672,10 @@ class Runner:
         """
         A 之前校验当前车辆是 1998 斯巴鲁 Impreza 22B-STI（主菜单或车库两种版式各一个判据）。
         命中任意一个即认为通过。
+
+        【重要】这两个判据都是**认车的**：模板是从 22B 的截图裁的，连车图+车名一起记住了。
+        所以它们**不能**用来判断"我在不在菜单里"（换了车分数就会掉到 0.5 左右）。
+        判断在不在菜单要用 tile_collection / tile_mastery / page_title_* 这些页面判据。
         """
         for name in ("car_current_menu", "car_current_garage"):
             hit = self._wait_for(name, 1.5)
@@ -675,8 +683,18 @@ class Runner:
                 print(f"  [校验] 当前车辆是 22B（{name}，{hit.score:.3f}）")
                 self.log.event("car_ok", det=name, score=round(hit.score, 3))
                 return True
-        print("  [!] 没检测到当前车辆是 1998 斯巴鲁 Impreza 22B-STI")
-        self.log.event("car_check_failed")
+        # 没命中：区分"人不在这两页"还是"在菜单里但开的不是 22B"（后者才是真问题）
+        in_menu, sc = self._in_menu_now()
+        if in_menu:
+            print("  [!] 你在菜单里，但**当前车辆不是 22B** —— 面板判据分数："
+                  f"menu={sc.get('car_current_menu')} (阈值 "
+                  f"{self.s.dets['car_current_menu'].threshold if 'car_current_menu' in self.s.dets else '-'})"
+                  f" / garage={sc.get('car_current_garage')}")
+            print("      → 跑 A 之前必须手动把车换回 1998 斯巴鲁 Impreza 22B-STI；"
+                  "只想刷技能点可以直接 --phase spend")
+        else:
+            print("  [!] 看不到菜单，无法判断当前车辆；请在主菜单或车库页跑这条校验")
+        self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
 
     # ---------------- 总入口 ---------------- #
