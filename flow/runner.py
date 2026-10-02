@@ -54,6 +54,7 @@ DETECTORS = (
     "hint_esc_retry", "panel_result",                       # A：结算
     "hint_unlock_all", "popup_no_resource", "popup_confirm",  # B：解锁 / 点数不足
     "popup_rate_event",                                     # 离开赛事后的「为挑战评分?」弹窗
+    "popup_move_home",                                      # 车库误触的「移动至住所」确认框
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
@@ -583,6 +584,29 @@ class Runner:
         # 所以次数要够覆盖 20 秒以上，否则加载没完就报"到不了车辆页"。
         for attempt in range(10):
             frame = self.frame()
+            # 【2026-10-03 助手实跑抓到的 bug③】上车后只会经历"自由驾驶 → Esc → 主菜单"，
+            # **绝不可能**回到「我的车辆」列表。看到列表 = 刚才根本没上去
+            # （旧判据"车格认不出来了 = 在加载"会被菜单的模糊背景骗过 → 假成功，
+            # 日志里 car_fp_record 记了一台压根没上的车，后面全乱）。
+            if after_load:
+                det_pg = self.s.dets.get("page_title_garage")
+                if det_pg is not None:
+                    sc_pg, _ = det_pg.probe(frame)
+                    if sc_pg >= det_pg.threshold:
+                        self.log.event("after_load_back_to_list", attempt=attempt,
+                                       score=round(sc_pg, 3))
+                        print(f"  [!] 上车后在「我的车辆」列表里（{sc_pg:.3f}）→ 这次没上去，判失败")
+                        return False
+            # 弹窗挡路先清掉（Esc 关不掉「移动至住所」，要 ↓+回车选「取消」）
+            det_mh = self.s.dets.get("popup_move_home")
+            if det_mh is not None and det_mh.observe(frame) is not None:
+                print("  [兜底] 「移动至住所」弹窗挡路 → ↓ 选「取消」+ 回车")
+                self.log.event("move_home_in_tab_loop", attempt=attempt)
+                self.press("down", "「移动至住所」→ 选「取消」")
+                self.sleep(0.4)
+                self.press(self.cfg.confirm_key, "确认「取消」")
+                self.sleep(0.6)
+                continue
             tab_score, _ = det_tab.probe(frame)
             if tab_score >= det_tab.threshold:
                 self.observe("tile_mastery", frame)              # 让去抖状态跟上
@@ -599,7 +623,16 @@ class Runner:
                 self.log.event("tab_probe_shot", attempt=attempt, shot=shot)
             if in_menu:
                 # 在菜单里但不在车辆页（别的标签页 / 我的车辆列表 / 精通页）
-                if sc.get("page_title_garage", 0.0) >= self.s.dets["page_title_garage"].threshold:
+                if sc.get("page_title_mastery", 0.0) >= self.s.dets["page_title_mastery"].threshold:
+                    # 【2026-10-03 实测卡死 · 助手自己跑出来的第一手证据】
+                    # 停在「车辆精通」页时，点「车辆」标签是**无效动作** —— 精通页没有标签栏，
+                    # tab_vehicle 匹配不上，坐标兜底点又点到精通树的节点上，
+                    # 于是整轮卡在这一屏死循环（日志：page_title_mastery=1.0、
+                    # hint_unlock_all=0.996、"没找到 tab_vehicle，跳过点击" ×N）。
+                    # 精通页的正解是 Esc（按键 map：Esc = 精通页返回车辆页）。
+                    self.press("esc", "从「车辆精通」页退回车辆页")
+                    self.sleep(self.cfg.esc_dwell)
+                elif sc.get("page_title_garage", 0.0) >= self.s.dets["page_title_garage"].threshold:
                     self.press("esc", "从「我的车辆」列表退回")
                     self.sleep(self.cfg.esc_dwell)
                 else:
@@ -1076,6 +1109,7 @@ class Runner:
                         _fp0 = self._title_crop(_f0, _bx, _by, _bw, _bh)
                         if _fp0 is not None:
                             self._remember_done(_fp0)
+                            self._seed_once = True
                             self.log.event("car_fp_seed", cell=list(_c0),
                                            note="首次进列表：光标那格=当前车辆，跳过")
                             print(f"  [找] 首次进列表，光标在 ({_r},{_c}) = 当前车辆 → 记为已处理")
@@ -1090,6 +1124,15 @@ class Runner:
                 self.log.event("grid_no_tiles", shot=shot)
                 return False
             cur = self._cursor_cell(frame, tiles)
+            # 【2026-10-03 助手实跑抓到的 bug②】"首次进列表时光标那格 = 当前车辆"这条规则，
+            # 原来只靠"指纹种子"落实，结果实测没兜住（日志 car_fp_seed cell=[0,0] 之后
+            # grid_target 仍然是 row=0 col=0）→ 选中当前车辆 → 它的「选择操作」菜单没有
+            # 「上车」→ 连按回车误触了「移动至住所」→ 整轮跑飞。
+            # 所以**同时**加一道几何判据：首次进列表的第一屏，光标所在格一律不当候选。
+            # 用户口径：只有最开始第一次进列表时最左格才是当前车辆（旧机制不动，这是叠加）。
+            skip_seed_cell = None
+            if getattr(self, "_seed_once", False) and cur is not None:
+                skip_seed_cell = tuple(cur)
             # 每次进列表都清空"这次走不到"的名单：它只用来**本轮**别重复撞同一台，
             # 绝不能变成永久跳过（车库里同款同名车指纹相同，永久跳过会误杀）。
             self._unreachable = []
@@ -1101,6 +1144,12 @@ class Runner:
             for t in tiles:
                 if t[6]:                        # 有 ♥ → 用户标过"已点满"
                     continue
+                if skip_seed_cell is not None and (t[0], t[1]) == skip_seed_cell:
+                    skipped += 1                # 首次进列表的光标格 = 当前车辆，不碰（bug②）
+                    self.log.event("grid_skip_current_car", cell=[t[0], t[1]],
+                                   heart_score=round(t[7], 3))
+                    print(f"  [找] 第 {attempt} 屏：跳过光标那格 ({t[0]},{t[1]}) = 当前车辆")
+                    continue
                 fp = self._title_crop(frame, t[2], t[3], t[4], t[5])
                 if self._fp_seen(fp):
                     skipped += 1                # 没♥但指纹说这次已经弄过 → 跳过（省掉 70 秒）
@@ -1109,6 +1158,7 @@ class Runner:
                     skipped += 1                # 之前走过但走不到的车，别再选它
                     continue
                 todo.append((t, fp))
+            self._seed_once = False            # 几何种子只在第一屏生效（列表一滚位置就变了）
             todo = self._order_candidates(todo)
             hearts = [t[7] for t in tiles if t[7] == t[7]]
             no_heart = sum(1 for t in tiles if not t[6])
@@ -1633,6 +1683,24 @@ class Runner:
                 self.log.event("dialog_cleared", note=note, in_menu=True, acted=acted)
                 return True
             frame = self.frame()
+            # 【2026-10-03 助手实跑】车库列表里乱按回车会误触「移动至住所」（快速移动）。
+            # 它 **Esc 关不掉**（实测 Esc 后弹窗原样还在）→ 必须 ↓ 选「取消」再回车。
+            dm = self.s.dets.get("popup_move_home")
+            if dm is not None and dm.observe(frame) is not None:
+                acted += 1
+                shot = self._save_evidence(frame, f"move_home{acted}")
+                print(f"  [兜底] 弹窗「移动至住所」→ ↓ 选「取消」+ 回车（证据 {shot}）")
+                self.log.event("clear_move_home", index=acted, shot=shot)
+                self.press("down", "「移动至住所」→ 选「取消」")
+                self.sleep(0.4)
+                self.press(self.cfg.confirm_key, "确认「取消」")
+                if self._wait_gone("popup_move_home", 6.0):
+                    self.log.event("move_home_cleared", acted=acted)
+                    print("  [兜底] 「移动至住所」已关掉 ✅")
+                    return True
+                if acted >= 3:
+                    break
+                continue
             hit = det.observe(frame) if det is not None else None
             if hit is None:
                 self.sleep(0.6)
