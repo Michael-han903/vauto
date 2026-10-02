@@ -1410,9 +1410,27 @@ class Runner:
                     downs_to_use = 0
                 break
         for attempt, downs in enumerate((downs_to_use,)):
+            # 【2026-10-03 用户实测："会把…没加满技能的车辆加入收藏，可能是不小心多输入了一次"
+            #   + "有时候会进入那个移动到最近的嘉年华选项卡"】
+            # 这两件都出在"回车之后没确认菜单真的弹出来了"：回车打空 → 后面的 ↓/回车
+            # 就打到了别的东西上（比如车库菜单的「移动至住所」）。两道闸：
+            #   a) 先看「移动至住所」弹窗有没有挡路 —— 挡住就绝不按回车（那会点成「确认」）；
+            #   b) 回车后中央区域必须有明显变化（菜单弹出来了）—— 没变就收手。
+            _dm = self.s.dets.get("popup_move_home")
+            if _dm is not None and not self.cfg.replay and _dm.observe(self.frame()) is not None:
+                self.log.event("favorite_blocked_by_move_home")
+                print("  [!] 「移动至住所」弹窗挡路 → 绝不按回车（防误触「确认」）")
+                return False
+            _before = self._list_roi(self.frame())
             self.press(self.cfg.confirm_key,
                        f"打开「选择操作」（加收藏·第 {attempt + 1} 次：↓×{downs}）")
             self.sleep(0.9)
+            _after = self._list_roi(self.frame())
+            _diff = float(block_max_abs_diff(_before, _after, blocks=self.cfg.nav_change_blocks))
+            if _diff < self.cfg.nav_change_threshold:
+                self.log.event("favorite_no_menu", downs=downs, diff=round(_diff, 1))
+                print(f"  [!] 回车后屏幕没变（差 {_diff:.1f}）→ 菜单没弹出来，收手不按 ↓/回车")
+                return False
             for _ in range(downs):
                 self.press(self.cfg.fav_key, "↓ 选「添加至收藏」")
                 self.sleep(0.4)
@@ -1583,7 +1601,13 @@ class Runner:
             return "already"
         self.press(self.cfg.unlock_key, "解锁全部")
         self.press(self.cfg.confirm_key, "确认「解锁额外加成」")
-        # 等结果：hint_unlock_all 消失 = 成功；popup_no_resource 出现 = 点数不足
+        # 【2026-10-03 用户实测 + 日志实锤】"会把因为技能点不足而没加满技能的车辆加入收藏"
+        # 根因：按下 Y/回车之后的头一两帧，底部提示被确认框盖住/淡出 → hint 的 confirmed
+        # 立刻变 False → 旧代码**当场**判 unlocked ✗（其实没解完，甚至可能是点数不足）。
+        # 修法：给足过渡时间 + 要求"连续 3 次都看不到提示"才判成功 + 期间掉出精通页/弹出
+        # 「点数不足」都按失败/无点处理（日志记 unlock_confirmed_gone 便于事后核查）。
+        self.sleep(max(1.6, self.cfg.poll * 2))
+        gone_streak = 0
         deadline = time.monotonic() + self.cfg.page_timeout
         while True:
             frame = self.frame()
@@ -1591,9 +1615,19 @@ class Runner:
                 self.press(self.cfg.confirm_key, "关掉「不够支付全部」")
                 self.log.event("no_points")
                 return "no_points"
-            self.observe("hint_unlock_all", frame)
-            if not det.confirmed:
-                return "unlocked"
+            if self._probe_loc("page_title_mastery", frame)[0] < self.s.dets["page_title_mastery"].threshold:
+                self.log.event("unlock_lost_page", gone_streak=gone_streak)
+                print("  [!] 解锁中掉出了精通页 → 不判成功")
+                return "timeout_wait_unlock"
+            hit = self.observe("hint_unlock_all", frame)
+            if not det.confirmed and hit is None:
+                gone_streak += 1
+                if gone_streak >= 3:
+                    self.log.event("unlock_confirmed_gone", streak=gone_streak,
+                                   hint_score=round(self._probe_loc("hint_unlock_all", frame)[0], 3))
+                    return "unlocked"
+            else:
+                gone_streak = 0
             if time.monotonic() >= deadline:
                 return "timeout_wait_unlock"
             self.sleep(self.cfg.poll)
