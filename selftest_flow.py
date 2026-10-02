@@ -150,5 +150,25 @@ else:
     ck("列表区域分块最大差稳定超过阈值（新判据可用）",
        min(watch) > THR * 2, f"最小 {min(watch):.2f} / 阈值 {THR}（最大 {max(watch):.2f}）")
 
+print("\n⑥ 静态检查：runner.py 里按名字取判据的地方，名字都必须在装配名单里")
+# 血泪（2026-10-02）：car_tile_22b 只加进了标定表、忘了加进 runner.py 顶部的 DETECTORS →
+# 换回 22B 的扫描循环第一行 self.s.dets["car_tile_22b"] 直接 KeyError →
+# 程序带着未处理的 traceback 退出，日志里只剩 release_all 收尾（"不知道怎么卡住了"）。
+import re
+from flow.runner import DETECTORS, OPTIONAL_DETECTORS
+
+_src = Path(r"C:\Users\lziha\visual_auto_toolkit\flow\runner.py").read_text(encoding="utf-8")
+_used = set()
+for _pat in (r'self\.s\.dets\["([a-z0-9_]+)"\]',
+             r'self\.s\.dets\.get\("([a-z0-9_]+)"',
+             r'(?:observe|_probe_loc|_wait_for|_wait_gone)\("([a-z0-9_]+)"',
+             r'click_match\("([a-z0-9_]+)"'):
+    _used |= set(re.findall(_pat, _src))
+_used -= {"car_current_menu"}          # 可选判据，缺了也能跑
+_known = set(DETECTORS) | set(OPTIONAL_DETECTORS)
+_missing = sorted(_used - _known)
+ck("runner.py 用到的判据都装配了", not _missing,
+   f"用到 {len(_used)} 个 | 装配 {len(_known)} 个" + (f" | 缺 {_missing}" if _missing else ""))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

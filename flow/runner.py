@@ -60,6 +60,7 @@ DETECTORS = (
     "tile_collection",                                      # 在不在主菜单剧情页（与当前车无关）
     "panel_search_title",                                   # 进赛事：搜索面板已打开
     "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
+    "car_tile_22b",                                         # 「我的车辆」里 22B 那一格（换回 22B 用）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -739,6 +740,16 @@ class Runner:
         """
         cfg = self.cfg
         print("\n===== 换回 22B：更换车辆 → 找 IMPRESA 22B-STI → 上车 =====")
+        # 【血泪教训 2026-10-02】判据加进标定表还不够，必须同时加进 runner.py 顶部的
+        # DETECTORS 名单 —— 那次漏了 car_tile_22b，扫描循环第一行就 KeyError，
+        # 程序带着未处理的 traceback 直接退出（日志里只剩 release_all 收尾）。
+        # 现在缺判据只会安静地放弃换车，不会把整轮跑挂掉。
+        det22 = self.s.dets.get("car_tile_22b")
+        if det22 is None:
+            print("  [!] 判据 car_tile_22b 没装配（DETECTORS 名单漏了？）→ 放弃换车，其余照常")
+            self.log.event("set_22b_fail", where="detector_missing")
+            self.stats["errors"] = self.stats.get("errors", 0) + 1
+            return False
         if self.check_car_22b(log_fail=False):
             print("  [=] 当前已经是 22B，不用换")
             self.log.event("set_22b_skip", reason="already_22b")
@@ -769,11 +780,11 @@ class Runner:
             if score != score:
                 score = 0.0
             best = max(best, score)
-            if hit is None or score < self.s.dets["car_tile_22b"].threshold:
+            if hit is None or score < det22.threshold:
                 # 视野里没有 22B → 往右走一格，同时看画面到底动没动
                 if went % cfg.car_scan_report == 0:
                     print(f"  [找] 已扫 {went} 列 | 本次最高 {best:.3f}"
-                          f"（阈值 {self.s.dets['car_tile_22b'].threshold}）")
+                          f"（阈值 {det22.threshold}）")
                     self.log.event("set_22b_scan", went=went, best=round(best, 3))
                 self.press("right", "列表里往右一格")
                 self.sleep(0.35)
@@ -1061,6 +1072,23 @@ class Runner:
             print(f"\n[急停] {exc}")
         except KeyboardInterrupt:
             print("\n[Ctrl+C] 手动中断")
+        except Exception as exc:
+            # 【兜底】2026-10-02 血泪：car_tile_22b 漏进装配名单 → 扫描时 KeyError →
+            # 程序带着浅显的 traceback 直接退出，日志里只剩一条 release_all 收尾，
+            # 用户和我都只看到「不知道怎么卡住了」。所以这里兜住一切未预期异常：
+            # 打 traceback + 存现场证据图 + 写一条 crash 事件（日志自己能回答"为什么停"）。
+            import traceback
+            print("\n[崩溃] 未预期异常 → 已停下并释放按键，原文如下：")
+            traceback.print_exc()
+            self.stats["stopped"] = f"crash:{type(exc).__name__}"
+            self.stats["errors"] = self.stats.get("errors", 0) + 1
+            shot = None
+            try:
+                shot = self._save_evidence(self.frame(guard=False), "crash")
+                print(f"[崩溃] 现场证据图: {shot}")
+            except Exception:
+                pass
+            self.log.event("crash", type=type(exc).__name__, msg=str(exc)[:300], shot=shot)
         finally:
             self.release_all("收尾")
             self._save_ledger()
