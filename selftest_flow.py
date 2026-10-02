@@ -388,5 +388,19 @@ try:
 except Exception as _e:
     ck("光标锚定自检可运行", False, repr(_e))
 
+print("\n⑬ 多辆待处理时的优先顺序：先最左列、同列先最上（用户口径）")
+# 2026-10-03 用户："识别到一张图片内有多辆未收藏车辆的时候，应该先看最左列的，
+# 如果最左列有不止一辆，应该看先最上面的"
+try:
+    _cfg8 = RunConfig()
+    _cfg8.log_dir = tempfile.mkdtemp(prefix="vauto_selftest8_")
+    _r8 = Runner(build_offline_stack(), _cfg8)
+    _cand = [((2, 1), "A"), ((0, 2), "B"), ((1, 0), "C"), ((0, 1), "D")]
+    _ord8 = [tag for _t, tag in _r8._order_candidates(_cand)]
+    ck("先最左列，同列再最上", _ord8 == ["C", "D", "A", "B"],
+       f"输入 (row,col) A=(2,1) B=(0,2) C=(1,0) D=(0,1) → 顺序 {_ord8}")
+except Exception as _e:
+    ck("候选排序自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

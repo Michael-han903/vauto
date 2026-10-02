@@ -955,6 +955,16 @@ class Runner:
         return True
 
     # ---------------- B：♥ 驱动的换车（2026-10-03 用户定的口径）---------------- #
+    @staticmethod
+    def _order_candidates(todo):
+        """候选车格的优先顺序（用户口径 2026-10-03）。
+
+        "识别到一张图片内有多辆未收藏车辆的时候，应该先看最左列的，如果最左列有不止一辆，
+        应该看先最上面的" → 按 **(列, 行)** 升序；不要按"离光标最近"（那样会来回跳、
+        而且不符合你看屏幕的顺序）。元素是 ((row, col, ...), fp)。
+        """
+        return sorted(todo, key=lambda p: (p[0][1], p[0][0]))
+
     def change_car(self) -> bool:
         """换到列表里**一台还没收藏（♥）的车**：点「更换车辆」→ 找没 ♥ 的车格 → 走过去 → 上车。
 
@@ -1022,8 +1032,7 @@ class Runner:
                     skipped += 1                # 之前走过但走不到的车，别再选它
                     continue
                 todo.append((t, fp))
-            todo.sort(key=lambda p: (0 if cur is None
-                                     else abs(p[0][0] - cur[0]) + abs(p[0][1] - cur[1])))
+            todo = self._order_candidates(todo)
             hearts = [t[7] for t in tiles if t[7] == t[7]]
             no_heart = sum(1 for t in tiles if not t[6])
             self.log.event("grid_scan", attempt=attempt, tiles=len(tiles), todo=len(todo),
