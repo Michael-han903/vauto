@@ -577,7 +577,10 @@ class Runner:
             self.press("esc", "上车后回到主世界 → Esc 打开主菜单")
             self.sleep(self.cfg.esc_dwell)
         seen_states = set()
-        for attempt in range(5):
+        # 【2026-10-03】attempts 5 → 10：上车加载要 13~18 秒，而这段等待以前是靠
+        # wait_stable 干等 60 秒撑着的。现在取消干等、由这里轮询（每次 ≈ esc_dwell），
+        # 所以次数要够覆盖 20 秒以上，否则加载没完就报"到不了车辆页"。
+        for attempt in range(10):
             frame = self.frame()
             tab_score, _ = det_tab.probe(frame)
             if tab_score >= det_tab.threshold:
@@ -875,8 +878,11 @@ class Runner:
         """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
         self.press(self.cfg.confirm_key, "打开「选择操作」")
         if not self.cfg.replay:
-            menu = self._wait_for("menu_select_title", 4.0)
-            row = self._wait_for("option_enter_car", 1.0)
+            # 这两个是**手工推定**的阈值，实测一直没命中（日志 menu_title=False
+            # enter_row=False）→ 每次白等 5.9 秒（2026-10-03 日志）。缩短成"诊断用的一瞥"，
+            # 反正下面那个 Enter 是幂等的（菜单开着就会选「上车」）。
+            menu = self._wait_for("menu_select_title", 1.2)
+            row = self._wait_for("option_enter_car", 0.8)
             if menu is None or row is None:
                 # 这两个阈值是手工推定的，首次在线就靠这条日志定论
                 self.log.event("car_menu_threshold_check", menu_title=bool(menu),
@@ -884,9 +890,13 @@ class Runner:
                                note="「选择操作」菜单判据不完整，仍继续（Enter 幂等）")
         self.press(self.cfg.confirm_key, "选「上车」")
         if not self.cfg.replay:
-            time.sleep(max(1.0, self.cfg.poll))
-            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
-                        timeout=self.cfg.car_change_timeout, settle=1.0, scale=0.5, poll=0.3)
+            # 【2026-10-03 实测 · 修"上车后等 61 秒"】原来这里用 wait_stable 等"画面静止"，
+            # 但上车加载完之后落在**主世界（自由驾驶）** —— 那画面一直在动（车在开、云在飘），
+            # 永远不会"静止" → 每次都等满 car_change_timeout=60 秒超时才继续
+            # （日志：选「上车」→ +61.3s → 才按 Esc）。
+            # 改：只给一点固定缓冲，剩下的交给 _ensure_vehicle_tab 自己轮询（它会按 Esc 并
+            # 反复判页）—— 加载一结束它自然把我们带到「车辆」页，不用干等。
+            self.sleep(self.cfg.after_enter_car_wait)
             # 【2026-10-02 用户实测确认】点「上车」后游戏**一定回到主世界（自由驾驶）**，
             # 要按 Esc 才出现主菜单 → 所以这里是 after_load=True（Esc 优先），
             # 之后还要点「车辆」标签才回到车辆页。判页分数写进日志（ensure_tab_probe）。

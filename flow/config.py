@@ -91,6 +91,10 @@ class RunConfig:
     # 原因：鼠标停在控件上会改它的外观（悬停高亮/提示条），干扰靠画面做的判据。
     park_pointer: bool = True
     park_at: Tuple[int, int] = (3, 3)   # 客户区左上角（那一带是背景，没有可悬停的控件）
+    # 【2026-10-03 实测】上车加载完之后落在主世界（自由驾驶）——画面一直在动，永远"不静止"，
+    # 所以不能用 wait_stable 等它（原来等满 car_change_timeout=60 秒；日志 +61.3s）。
+    # 现在只给这么点固定缓冲，剩下交给 _ensure_vehicle_tab 轮询（它按 Esc + 反复判页）。
+    after_enter_car_wait: float = 6.0
     grid_area: Tuple[int, int, int, int] = (760, 400, 3800, 1900)   # 车格区域（左,上,右,下）
     tile_w_min: int = 560               # 车格宽度范围（实测 636~648，留余量）
     tile_w_max: int = 800
