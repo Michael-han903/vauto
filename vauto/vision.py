@@ -216,6 +216,28 @@ class VisualDetector:
 
             return self._match if self._confirmed else None
 
+    def probe(self, frame: np.ndarray):
+        """
+        单帧打分，**不看阈值、不动去抖状态** —— 给 `run_vauto.py --probe`（人工翻页面时复核判据）
+        和阈值复核用。返回 (最佳分数, 最佳命中)；区域不可比时分数为 nan。
+
+        分数语义统一成"越大越像"（SQDIFF 系列会取 1-s）。
+        """
+        if frame is None or frame.ndim < 2:
+            return float("nan"), None
+        src = scaled_frame(frame, self.scale)
+        eff_scales = tuple(float(s) * self.scale for s in self.scales)
+        region = None if self.roi is None else _scale_region(self.roi, self.scale)
+        hit = self.matcher.match_best(src, self.template, threshold=-1.0, region=region,
+                                      scales=eff_scales, nms_iou=self.nms_iou,
+                                      max_results=self.max_results)
+        if hit is None:
+            return float("nan"), None
+        score = float(getattr(hit, "score", float("nan")))
+        if self.matcher.ascending:
+            score = 1.0 - score
+        return score, _match_to_full(hit, self.scale)
+
     def _detect_once(self, frame: np.ndarray) -> Optional[Match]:
         if frame is None or frame.ndim < 2:
             return None

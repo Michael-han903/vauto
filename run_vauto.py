@@ -46,6 +46,10 @@ def parse_args(argv=None):
     p.add_argument("--config", type=str, default="", help="从 JSON 读配置")
     p.add_argument("--save-config", type=str, default="", help="把当前配置写出来供你改")
     p.add_argument("--no-car-check", action="store_true", help="跳过「当前车是 22B」的校验")
+    p.add_argument("--probe", action="store_true",
+                   help="判据探针：只抓帧打分、绝不按键；你自己翻页面，翻完 Ctrl+C 看汇总")
+    p.add_argument("--probe-seconds", type=float, default=0.0,
+                   help="探针自动跑多少秒后结束（0=手动 Ctrl+C）")
     p.add_argument("--selftest", action="store_true", help="离线自检：不碰屏幕与键鼠")
     return p.parse_args(argv)
 
@@ -99,6 +103,17 @@ def main(argv=None) -> int:
 
     stack = build_stack(cfg, title_key=cfg.title_key)
     print(f"[+] 目标窗口 hwnd={stack.hwnd}")
+    try:
+        from vauto.calib import calibration_table
+        print(calibration_table(stack.calibration))       # 日志里留一份「当时用的什么阈值」
+    except Exception as exc:                              # 打印失败不该挡住运行
+        print(f"[!] 判据清单打印失败: {exc}")
+    if args.probe:
+        # 只抓帧打分，绝不按键：用来人工翻页面复核判据
+        from flow.probe import probe_loop
+        probe_loop(stack, seconds=(args.probe_seconds or None))
+        stack.capture.close()
+        return 0
     with stack.stop:
         runner = Runner(stack, cfg)
         runner.run()

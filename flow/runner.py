@@ -52,10 +52,10 @@ DETECTORS = (
     "hint_unlock_all", "popup_no_resource", "popup_confirm",  # B：解锁 / 点数不足
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
-    "menu_select_title",                                    # 选择操作菜单
-    "car_current_menu", "car_current_garage",               # 当前车辆
+    "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
+    "car_current_garage",                                   # 当前车辆（车库页）
 )
-# 可选判据：没有也能跑（car_current_menu 在"刚上车的淡入帧"上分数不稳，标定会把它判掉）
+# 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
 
 CAR_NAME_ROI = (68, 48, 1356, 136)      # 左上"当前车辆"名条的 ROI（换车验证用，与模板无关）
@@ -96,7 +96,8 @@ def build_stack(cfg: RunConfig, title_key: Optional[str] = None) -> Stack:
     sim.emergency = stop
     guard = FocusGuard(hwnd, stop_event=stop.event, verbose=True)
     cal = load_calibration()
-    dets = build_detectors(DETECTORS, cal=cal, matcher=matcher, optional=OPTIONAL_DETECTORS)
+    dets = build_detectors(tuple(DETECTORS) + tuple(OPTIONAL_DETECTORS),
+                           cal=cal, matcher=matcher, optional=OPTIONAL_DETECTORS)
     return Stack(hwnd=hwnd, capture=capture, matcher=matcher, sim=sim, stop=stop,
                  guard=guard, humanizer=humanizer, dets=dets, calibration=cal)
 
@@ -108,7 +109,8 @@ def build_offline_stack(capture=None, sim=None, hwnd: int = 0) -> Stack:
     """
     matcher = TemplateMatcher(grayscale=True, threshold=0.8)
     cal = load_calibration()
-    dets = build_detectors(DETECTORS, cal=cal, matcher=matcher, optional=OPTIONAL_DETECTORS)
+    dets = build_detectors(tuple(DETECTORS) + tuple(OPTIONAL_DETECTORS),
+                           cal=cal, matcher=matcher, optional=OPTIONAL_DETECTORS)
 
     class _NoStop:
         event = None
@@ -481,7 +483,13 @@ class Runner:
         # 选择操作 → 上车
         self.press(self.cfg.confirm_key, "打开「选择操作」")
         if not self.cfg.replay:
-            self._wait_for("menu_select_title", 4.0)      # 看不到也继续（Enter 幂等）
+            menu = self._wait_for("menu_select_title", 4.0)
+            row = self._wait_for("option_enter_car", 1.0)
+            if menu is None or row is None:
+                # 这两个阈值是手工推定的，首次在线就靠这条日志定论
+                self.log.event("car_menu_threshold_check", menu_title=bool(menu),
+                               enter_row=bool(row),
+                               note="「选择操作」菜单判据不完整，仍继续（Enter 幂等）")
         self.press(self.cfg.confirm_key, "选「上车」")
         # 等加载完成（车会重新载入，画面会明显变化再稳定）
         if not self.cfg.replay:
