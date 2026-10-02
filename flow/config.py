@@ -37,7 +37,8 @@ class RunConfig:
     retry_key: str = "esc"              # 【实测】结算画面 [Esc] 重试
     leave_event_key: str = "enter"      # 【实测】结算画面 [Enter] 继续（离开赛事）
     round_timeout: float = 840.0        # 【实测】一轮约 542 s，留到 14 分钟
-    round_settle_before: float = 90.0   # 【实测】Esc 重试后要重新加载（用户口述约 1 分钟）→ 超时给足
+    round_settle_before: float = 90.0
+    round_active_wait: float = 150.0    # 等"画面动起来"=比赛开始（加载画面是静止的，不能只等静止）   # 【实测】Esc 重试后要重新加载（用户口述约 1 分钟）→ 超时给足
     poll: float = 0.5                   # 轮询间隔
     max_polls_per_round: int = 0        # 0 = 由 round_timeout/poll 推算；回放时设小值
     ack_timeout: float = 8.0            # 按 Esc 后确认"已离开结算"的超时

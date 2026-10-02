@@ -310,6 +310,44 @@ def block_max_abs_diff(a: np.ndarray, b: np.ndarray, blocks=(8, 6), gray: bool =
     return float(np.max(cv2.resize(diff, (bw, bh), interpolation=cv2.INTER_AREA)))
 
 
+def wait_active(capture,
+                stop_event=None,
+                timeout: float = 120.0,
+                need_streak: int = 3,
+                threshold: float = 6.0,
+                blocks=(8, 6),
+                poll: float = 0.4,
+                scale: float = 0.5):
+    """
+    等「画面真的动起来」—— 与 wait_stable 相反的那个闸门。
+
+    为什么需要：加载画面（HORIZON FESTIVAL 那种过场）**是静止的**，所以 wait_stable
+    会把它当成"已加载完成"提前返回（2026-10-02 实测：进赛事后 5 秒就"稳定"了，
+    其实还在过场）。而挑战一旦开始，HUD（计时/名次）就在持续变化。
+    所以"连续 need_streak 次分块最大差 >= threshold"才是"比赛开始"的可靠信号。
+
+    返回 True = 检测到持续变化；False = 超时仍静止（可能卡在加载或某个等待输入的界面）。
+    """
+    t0 = time.monotonic()
+    prev = None
+    streak = 0
+    while time.monotonic() - t0 < timeout:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        frame = capture.grab()
+        small = scaled_frame(frame, scale) if scale != 1.0 else frame
+        if prev is not None:
+            if block_max_abs_diff(prev, small, blocks=blocks) >= threshold:
+                streak += 1
+                if streak >= need_streak:
+                    return True
+            else:
+                streak = 0
+        prev = small
+        time.sleep(max(0.05, poll))
+    return False
+
+
 def wait_stable(
     capture,
     stop_event=None,

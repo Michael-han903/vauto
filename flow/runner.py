@@ -40,7 +40,7 @@ from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSim
                    TemplateMatcher, TimingProfile, WindowCapture, block_max_abs_diff,
                    client_to_screen, enable_dpi_awareness, find_window_by_title,
                    load_calibration, build_detectors, mean_abs_diff, scaled_frame,
-                   wait_stable)
+                   wait_stable, wait_active)
 from vauto.calib import calibration_table
 
 from .config import RunConfig
@@ -382,10 +382,21 @@ class Runner:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.round_settle_before, settle=0.8, scale=0.5,
                         poll=min(0.3, self.cfg.poll))
+        # 1.5) 等"画面真的动起来" = 比赛开始。
+        # 加载过场（HORIZON FESTIVAL 那种）是**静止的**，wait_stable 会把它误判成"加载完成"
+        # （2026-10-02 证据图 logs/event_entered_*.png 就是这么拍到的）。而挑战开始后 HUD
+        # 一直在动 → 用 wait_active 作为真正的起跑闸门。
+        if not self.cfg.replay:
+            active = wait_active(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                                 timeout=self.cfg.round_active_wait,
+                                 threshold=self.cfg.nav_change_threshold,
+                                 blocks=self.cfg.nav_change_blocks)
+            self.log.event("round_active", ok=active)
+            if not active:
+                print("  [!] 等了很久画面还是静止的 —— 可能卡在加载或某个等待输入的界面")
         # 2) 按住 W
-        # 先松一次再按：loading/过场画面静止时 wait_stable 会提前返回，如果那时就已经按着 W，
-        # 这条"按下"事件可能被加载过程吞掉（游戏加载完不一定会重新读键态）→ 重新发一次 keydown。
-        self.release_all("加载结束，准备按住 W")
+        # 先松一次再按：保证这条 keydown 发生在加载**之后**（加载过程可能吞掉按键事件）
+        self.release_all("比赛开始，准备按住 W")
         self.hold(self.cfg.hold_key, "挑战进行中")
         # 3) 轮询结算判据（两个判据每帧都要喂，否则其中一个的连续帧计数会断）
         polls, settle_hit = 0, None

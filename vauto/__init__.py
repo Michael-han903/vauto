@@ -84,6 +84,7 @@ _EXPORTS: Dict[str, str] = {
     "mean_abs_diff": "vision",
     "block_max_abs_diff": "vision",
     "wait_stable": "vision",
+    "wait_active": "vision",
     # calib（读标定产物、装配检测器）
     "load_calibration": "calib",
     "build_detectors": "calib",
