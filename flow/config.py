@@ -48,6 +48,14 @@ class RunConfig:
     # 主菜单(剧情页) → 点「创意中心」标签 → Enter(EventLab) → ↓ → Enter(参加挑战)
     #   → Backspace(搜索面板) → ↑ → Enter(共享代码) → 输入代码 → Enter → ↓ → Enter(确认)
     #   → 等结果卡片 → Enter(进入挑战)
+    # ---- 回 22B（B 之后回 A 的前提）----
+    car_find_tries: int = 12            # 在车库里找 22B 最多走/翻多少次
+    list_search_roi: Tuple[int, int, int, int] = (760, 380, 3080, 1560)   # 车格列表区域
+    brand_next_click: Tuple[int, int] = (3621, 354)   # 品牌栏「▶ 下一个品牌」（找 22B 的兜底手段）
+    grid_origin: Tuple[int, int] = (800, 408)          # 「我的车辆」车格首格左上角（实机量）
+    grid_pitch: Tuple[int, int] = (709, 522)           # 车格间距（实机量）—— 用于按格数走过去
+    back_to_22b: bool = True            # B 阶段结束后自动把车换回 22B
+
     enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
     tab_creativity_click: Tuple[int, int] = (2390, 476)   # 【实测】创意中心标签中心（坐标兜底；正常走 tab_creativity 模板匹配）
     share_code: str = "161047605"                          # 【实测】挑战共享代码
@@ -101,6 +109,8 @@ class RunConfig:
         self.tab_vehicle_click = tuple(int(v) for v in self.tab_vehicle_click)
         self.nav_watch_roi = tuple(int(v) for v in self.nav_watch_roi)
         self.nav_change_blocks = tuple(int(v) for v in self.nav_change_blocks)
+        self.grid_origin = tuple(int(v) for v in self.grid_origin)
+        self.grid_pitch = tuple(int(v) for v in self.grid_pitch)
         if self.phase not in ("farm", "spend", "both"):
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
         if self.poll <= 0:

@@ -693,6 +693,113 @@ class Runner:
         return self._wait_gone("page_title_mastery", self.cfg.page_timeout)
 
     # ---------------- 车辆校验 ---------------- #
+    # ---------------- 回 22B（B 跑完回 A 的前提）---------------- #
+    def _probe_loc(self, name: str, frame: np.ndarray):
+        """单帧定位（不动去抖状态）→ 返回 (分数, Match)；Match 已在全帧坐标上。"""
+        det = self.s.dets.get(name)
+        if det is None:
+            return float("nan"), None
+        return det.probe(frame)
+
+    def _list_next(self) -> bool:
+        """车格列表里往右走一格（把视野外的车拉进来）。返回"画面真的动了没有"。"""
+        before = self._list_roi(self.frame())
+        self.press("right", "列表里往右一格")
+        self.sleep(0.55)
+        after = self._list_roi(self.frame())
+        diff = block_max_abs_diff(before, after, blocks=self.cfg.nav_change_blocks)
+        moved = float(diff) >= self.cfg.nav_change_threshold
+        self.log.event("set_22b_step", diff=round(float(diff), 1), moved=bool(moved))
+        if not moved:
+            print(f"  [走] 没动（分块差 {diff:.1f} < {self.cfg.nav_change_threshold}）→ 到头了")
+        return bool(moved)
+
+    def _grid_cell_of(self, hit) -> Tuple[int, int]:
+        """车格位置 → (第几列, 第几行)。间距/原点都是实机量出来的，不是猜的。"""
+        gx, gy = self.cfg.grid_origin
+        px, py = self.cfg.grid_pitch
+        return (max(0, int(round((hit.x - gx) / px))),
+                max(0, int(round((hit.y - gy) / py))))
+
+    def _enter_car_and_verify(self, where: str = "") -> bool:
+        """对**当前选中格**按 Enter（选择操作）→ Enter（上车）→ 等加载 → 复核是不是 22B。"""
+        self.press("enter", "打开「选择操作」")
+        self.sleep(0.9)
+        self.press("enter", "选「上车」")
+        # 【别当卡死】上车要加载 13~18s（实测），这期间没有任何判据命中是正常的。
+        det = self.s.dets.get("car_current_garage")
+        t0, seen = time.monotonic(), False
+        while time.monotonic() - t0 < self.cfg.car_change_timeout:
+            self.sleep(1.0)
+            sc, _m = self._probe_loc("car_current_garage", self.frame())
+            if det is not None and sc == sc and sc >= det.threshold:
+                seen = True
+                break
+        ok = bool(seen and self.check_car_22b())
+        self.log.event("set_22b_enter", where=where, panel=bool(seen), ok=ok)
+        print(f"  [换] {where} → " + ("成功，当前车就是 22B ✅" if ok else "面板回来了但**不是 22B**（点错格了）"))
+        return ok
+
+    def set_car_22b(self) -> bool:
+        """把当前车换回 1998 斯巴鲁 Impreza 22B-STI —— 跑 A 的前提。
+
+        实机量到的界面事实（2026-10-02，用户截图 + 视频帧）：
+        * 「我的车辆」列表第一个标签「当前车辆」里装的是**全部车**（不按品牌过滤），当前车排最前；
+        * 22B 那格的车名文字 = templates/car_tile_22b.png；车格间距 ≈ (709, 522)、首格原点 ≈ (800, 408)；
+        * 选中某格：**先试鼠标点它**（最简单），点不动就用方向键按格数走过去（用户手动就是这么走的）；
+        * 上车 = Enter（选择操作）→ Enter（上车）→ 加载 13~18s；
+        * 复核：check_car_22b（左上角车名面板，认车的那个判据）。
+        """
+        cfg = self.cfg
+        print("\n===== 换回 22B：更换车辆 → 找 IMPRESA 22B-STI → 上车 =====")
+        if self.check_car_22b():
+            print("  [=] 当前已经是 22B，不用换")
+            self.log.event("set_22b_skip", reason="already_22b")
+            return True
+        if not self._ensure_vehicle_tab():
+            return False
+        if not self.click_match("tile_change_car", note="点「更换车辆」"):
+            return False
+        if self._wait_for("page_title_garage", cfg.page_timeout) is None:
+            print("  [!] 换车列表没打开")
+            self.log.event("set_22b_fail", where="list_not_open")
+            return False
+        self.sleep(1.2)
+        for attempt in range(1, cfg.car_find_tries + 1):
+            frame = self.frame()
+            score, hit = self._probe_loc("car_tile_22b", frame)
+            self.log.event("set_22b_scan", attempt=attempt, score=None if score != score else round(score, 3))
+            if hit is None or score != score or score < self.s.dets["car_tile_22b"].threshold:
+                print(f"  [找] 第 {attempt} 次：视野里没有 22B（{score:.3f}）→ 往右走一格")
+                if not self._list_next():
+                    break
+                continue
+            pt = (int(hit.center[0]), int(hit.center[1]))
+            print(f"  [找] 第 {attempt} 次：22B 在 {pt}（{score:.3f}）→ 点它")
+            self.log.event("set_22b_found", attempt=attempt, at=list(pt), score=round(score, 3))
+            self.click_client(pt, "点 22B 车格")
+            self.sleep(0.9)
+            if self._enter_car_and_verify(f"鼠标点{pt}"):
+                return True
+            # 鼠标点没生效 → 用方向键数格子走过去（用户手动就是这么走的）
+            col, row = self._grid_cell_of(hit)
+            print(f"  [找] 改用方向键：右 {col} 次、下 {row} 次")
+            self.log.event("set_22b_arrows", col=col, row=row)
+            for _ in range(col):
+                self.press("right", "往右一列")
+                self.sleep(0.3)
+            for _ in range(row):
+                self.press("down", "往下一行")
+                self.sleep(0.3)
+            self.sleep(0.8)
+            if self._enter_car_and_verify(f"方向键{col},{row}"):
+                return True
+        shot = self._save_evidence(self.frame(), "set_22b_failed")
+        print(f"  [!] 没换成 22B → 证据 {shot} → 停下（不盲换）")
+        self.log.event("set_22b_fail", where="exhausted", shot=shot)
+        self.stats["errors"] = self.stats.get("errors", 0) + 1
+        return False
+
     def check_car_22b(self) -> bool:
         """
         A 之前校验当前车辆是 1998 斯巴鲁 Impreza 22B-STI（主菜单或车库两种版式各一个判据）。
@@ -913,6 +1020,12 @@ class Runner:
                 self.phase_farm(cfg.rounds)
             if cfg.b_enabled and cfg.phase != "farm":
                 self.phase_spend(cfg.cars)
+            # 【闭环的关键一步】B 之后把车换回 22B —— 否则下一轮 A 用的不是 22B
+            # （A 的节奏/判据都是按它标定的）。--phase spend 也会走到这里，方便单独试。
+            if cfg.b_enabled and cfg.back_to_22b and not cfg.dry_run:
+                if not self.set_car_22b():
+                    print("[!] 换回 22B 失败 → 停下（下次跑 A 之前请手动换车；证据见 logs/）")
+                    return {"stopped": "back_to_22b_failed", **self.stats}
         except AbortedByUser as exc:
             print(f"\n[急停] {exc}")
         except KeyboardInterrupt:
