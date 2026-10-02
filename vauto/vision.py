@@ -289,6 +289,27 @@ def mean_abs_diff(a: np.ndarray, b: np.ndarray, gray: bool = True) -> float:
     return float(np.mean(cv2.absdiff(ga, gb)))
 
 
+def block_max_abs_diff(a: np.ndarray, b: np.ndarray, blocks=(8, 6), gray: bool = True) -> float:
+    """
+    分块最大平均绝对差（0~255）—— 「画面里**局部**变了没有」的判据。
+
+    为什么需要它：一整屏 3840×1450 的区域里只挪动一个高亮框（约 436×436 的边框），
+    全局平均差只有 0.6 左右，任何合理阈值都判不出来；但按 8×6 分块后，被影响的那块
+    平均差能到 20~60 → 阈值可以定得很干净。等价于"取变化最剧烈的那个区块"。
+
+    实现：absdiff 后用 INTER_AREA 缩到 (bw, bh)，每个像素就是那一块的平均值（比逐块切片快）。
+    """
+    bw, bh = int(blocks[0]), int(blocks[1])
+    if a.shape != b.shape:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+    ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY) if (gray and a.ndim == 3) else a
+    gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) if (gray and b.ndim == 3) else b
+    diff = cv2.absdiff(ga, gb)
+    if diff.shape[0] < bh or diff.shape[1] < bw:
+        return float(np.mean(diff))
+    return float(np.max(cv2.resize(diff, (bw, bh), interpolation=cv2.INTER_AREA)))
+
+
 def wait_stable(
     capture,
     stop_event=None,

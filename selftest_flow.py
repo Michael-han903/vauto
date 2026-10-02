@@ -120,5 +120,35 @@ for _ in range(200):
             break
 ck("任何配置下都在预算内停下", stuck == 0, f"超预算的情况 {stuck}/200")
 
+print("\n== ⑤ 换车验证信号：名条判不出来，列表区域判得出来（真实录屏帧） ==")
+# 【这是第一次真跑失败的根因】原来用左上角「当前车辆」名条做"车换了吗"的判据，
+# 但实测：光标在「我的车辆」列表里移动时，名条**完全不变**（它显示当前驾驶的车）。
+# 用 golden_frames/garage_list 里 44 张连续帧（用户当时正在按方向键）验证：
+#   名条均差全为 0.00；列表区域分块最大差 18~152（阈值 6.0 有 3 倍余量）。
+_gf = Path(__file__).resolve().parent / "golden_frames" / "garage_list"
+_frames = sorted(_gf.glob("*.png")) if _gf.is_dir() else []
+if len(_frames) < 5:
+    ck("车库列表帧可用（golden_frames/garage_list）", False, f"只有 {len(_frames)} 张")
+else:
+    import cv2
+    import numpy as np
+    from vauto import block_max_abs_diff, mean_abs_diff
+
+    def _load(p):
+        return cv2.imdecode(np.fromfile(str(p), dtype="uint8"), cv2.IMREAD_COLOR)
+
+    def _crop(im, r):
+        x, y, w, h = r
+        return im[y:y + h, x:x + w]
+
+    STRIP, WATCH, THR = (68, 48, 1356, 136), (0, 400, 3840, 1520), 6.0
+    ims = [_load(p) for p in _frames]
+    strip = [mean_abs_diff(_crop(a, STRIP), _crop(b, STRIP)) for a, b in zip(ims, ims[1:])]
+    watch = [block_max_abs_diff(_crop(a, WATCH), _crop(b, WATCH)) for a, b in zip(ims, ims[1:])]
+    ck("名条在光标移动时几乎不变（旧判据必然失败）", max(strip) < 1.0,
+       f"最大均差 {max(strip):.2f}（{len(strip)} 对相邻帧）")
+    ck("列表区域分块最大差稳定超过阈值（新判据可用）",
+       min(watch) > THR * 2, f"最小 {min(watch):.2f} / 阈值 {THR}（最大 {max(watch):.2f}）")
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

@@ -37,9 +37,10 @@ import cv2
 import numpy as np
 
 from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSimulator,
-                   TemplateMatcher, TimingProfile, WindowCapture, client_to_screen,
-                   enable_dpi_awareness, find_window_by_title, load_calibration,
-                   build_detectors, mean_abs_diff, scaled_frame, wait_stable)
+                   TemplateMatcher, TimingProfile, WindowCapture, block_max_abs_diff,
+                   client_to_screen, enable_dpi_awareness, find_window_by_title,
+                   load_calibration, build_detectors, mean_abs_diff, scaled_frame,
+                   wait_stable)
 from vauto.calib import calibration_table
 
 from .config import RunConfig
@@ -327,6 +328,11 @@ class Runner:
         x, y, w, h = CAR_NAME_ROI
         return frame[y:y + h, x:x + w]
 
+    def _list_roi(self, frame: np.ndarray) -> np.ndarray:
+        """列表/车格区域（不含左上名条与底部提示条）—— 换车验证看这里。"""
+        x, y, w, h = self.cfg.nav_watch_roi
+        return frame[y:y + h, x:x + w]
+
     def _save_evidence(self, frame: np.ndarray, tag: str) -> str:
         """存下"出问题那一刻"的画面 —— 无人值守跑挂后能回答"当时停在哪儿"（存到 logs/）。"""
         try:
@@ -432,7 +438,10 @@ class Runner:
                 print("  [!] 到不了「车辆」页，结束 B 阶段")
                 break
             if not self.change_car():
-                print("  [!] 换车失败，结束 B 阶段")
+                # 记为错误（原来这里不计错误，跑挂了汇总里仍是 errors=0，会让人以为一切正常）
+                self.stats["errors"] += 1
+                self.log.event("change_car_failed", car_index=i + 1)
+                print("  [!] 换车失败，结束 B 阶段（详情看日志/证据图）")
                 break
             print(f"  [B] 第 {i + 1} 台车：已上车")
             state = self.unlock_current_car()
@@ -473,32 +482,55 @@ class Runner:
         """换到列表里的下一辆车：点「更换车辆」→ 走一格 → Enter → Enter。"""
         if not self.click_match("tile_change_car", note="点「更换车辆」"):
             return False
-        # 等列表出现（用左上角"当前车辆"名条是否存在来判：车库列表页一定有它）
-        if self._wait_for("car_current_garage", self.cfg.page_timeout) is None:
-            print("  [!] 「更换车辆」列表没出现")
+        # 等列表出现（判据见下）
+        # 等列表出现。**必须用页面标题判据**：左上角「当前车辆」名条在「车辆」标签页上也有，
+        # 用它等于没判 —— 第一次真跑（2026-10-02 20:43）就是这么漏过去的。
+        if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
+            shot = self._save_evidence(self.frame(), "nav_list_not_opened")
+            print(f"  [!] 「更换车辆」列表没出现（证据: {shot}）")
+            self.log.event("nav_list_missing", shot=shot)
             return False
-        # 走一格：每步都用"名条像素是否变化"验证
-        self._nav_baseline = self._name_roi(self.frame())
+        # 走一格：每步都用「列表区域是否发生**局部**变化」验证。
+        # 不能用左上角名条：实测（2026-10-02 探针 620 帧）光标在列表里移动时，名条一直
+        # 保持 1.000 完全不变 —— 它显示的是"当前驾驶的车"，不跟随光标。
+        if not self.cfg.replay:
+            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                        timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
+                        poll=min(0.3, self.cfg.poll))
+        self._nav_base_frame = self.frame()
+        self._nav_last_frame = self._nav_base_frame
+        self._nav_baseline = self._list_roi(self._nav_base_frame)
 
         def _press_raw(key: str) -> None:
             self.s.stop.check()
             self.log.event("nav_press", key=key, dry=self.cfg.dry_run)
             if not self.cfg.dry_run:
                 self.s.sim.tap_key(key)
-                self.sleep(0.25)
+                self.sleep(0.35)      # 给光标移动/高亮重绘留时间，避免抓到按键前的帧
 
         def _changed() -> bool:
             before = self._nav_baseline
-            now = self._name_roi(self.frame())
+            f = self.frame()
+            self._nav_last_frame = f
+            now = self._list_roi(f)
             self._nav_baseline = now
             if before is None:
                 return False
-            return mean_abs_diff(before, now, gray=True) > 3.0
+            score = block_max_abs_diff(before, now, blocks=self.cfg.nav_change_blocks)
+            changed = score >= self.cfg.nav_change_threshold
+            self.log.event("nav_change", score=round(score, 2), changed=changed,
+                           threshold=self.cfg.nav_change_threshold)
+            return changed
 
         walker = GridWalker(press=_press_raw, car_changed=_changed,
                             max_fail=self.cfg.nav_max_fail, budget=self.cfg.nav_budget)
         if not walker.step():
-            print("  [!] 走不动了（可能已是列表最后一辆）")
+            # 失败必须留证据：光标移不动 = 要么没进列表、要么判据不对 —— 有图才能定论
+            before_shot = self._save_evidence(self._nav_base_frame, "nav_stuck_before")
+            after_shot = self._save_evidence(self._nav_last_frame, "nav_stuck_after")
+            print(f"  [!] 走不动了（光标没动）证据: {before_shot} | {after_shot}")
+            self.log.event("nav_stuck", before=before_shot, after=after_shot,
+                           steps=getattr(walker, "steps", None))
             return False
         self.log.event("nav_step", steps=walker.steps)
         # 选择操作 → 上车

@@ -56,6 +56,14 @@ class RunConfig:
     # 把"没命中任何判据"当成"未知画面"来干预 —— 必须用"画面是否还在变化"来区分加载/卡死。
     car_change_timeout: float = 60.0    # 换车后等加载完成（含过场；实测 18.5 s 最长一次）
 
+    # ---- 列表导航（「更换车辆」用）----
+    # 【实测 2026-10-02】光标在列表里移动时，左上角「当前车辆」名条**完全不变**（它显示当前
+    # 驾驶的车，不跟随光标）→ 换车验证必须看「列表区域有没有发生局部变化」。
+    # 全局平均差对"挪一个高亮框"不敏感（0.6 量级），所以用分块最大差（被影响的那一块 20~60）。
+    nav_watch_roi: Tuple[int, int, int, int] = (0, 400, 3840, 1520)   # 列表区域（含标签栏+车格）
+    nav_change_blocks: Tuple[int, int] = (8, 6)                       # 分块数
+    nav_change_threshold: float = 6.0                                 # 分块最大差 ≥ 此值 = 变了
+
     # ---- 走法开关 ----
     phase: str = "both"                 # farm / spend / both
     rounds: int = 4                     # farm 阶段跑几轮挑战
@@ -73,6 +81,8 @@ class RunConfig:
 
     def __post_init__(self) -> None:
         self.tab_vehicle_click = tuple(int(v) for v in self.tab_vehicle_click)
+        self.nav_watch_roi = tuple(int(v) for v in self.nav_watch_roi)
+        self.nav_change_blocks = tuple(int(v) for v in self.nav_change_blocks)
         if self.phase not in ("farm", "spend", "both"):
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
         if self.poll <= 0:
