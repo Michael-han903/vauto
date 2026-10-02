@@ -282,5 +282,28 @@ try:
 except Exception as _e:
     ck("当前车辆跳过自检可运行", False, repr(_e))
 
+print("\n⑩ 鼠标用完归位到左上角（用户要求：悬停会改控件外观、干扰画面判据）")
+try:
+    _cfg5 = RunConfig()
+    _cfg5.log_dir = tempfile.mkdtemp(prefix="vauto_selftest5_")
+    _cfg5.dry_run = False            # 要真走按键/鼠标路径（离线的假 sim，不碰真机）
+    _st5 = build_offline_stack()
+    _r5 = Runner(_st5, _cfg5)
+    _r5.click_client((1234, 567), "自检：点一下看看会不会归位")
+    _acts = list(getattr(_st5.sim, "held", []))
+    print(f"       离线假 sim 记到的动作: {_acts}")
+    ck("点击之后鼠标被移回左上角", any(a[0] == "move" and tuple(a[1]) == tuple(_cfg5.park_at)
+                                    for a in _acts), f"park_at={_cfg5.park_at}")
+    ck("点击本身也发生了", any(a[0] == "click" for a in _acts))
+    _cfg5.dry_run = True             # dry-run 下不该动鼠标
+    _st5b = build_offline_stack()
+    _r5b = Runner(_st5b, _cfg5)
+    _n_before = len(list(getattr(_st5b.sim, "held", [])))
+    _r5b.click_client((10, 10), "dry-run")
+    _n_after = len(list(getattr(_st5b.sim, "held", [])))
+    ck("dry-run 下不发任何鼠标动作", _n_after == _n_before, f"动作数 {_n_before} → {_n_after}")
+except Exception as _e:
+    ck("鼠标归位自检可运行", False, repr(_e))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

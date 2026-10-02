@@ -166,6 +166,9 @@ class _NoSim:
     def move_bezier(self, pos, **kw):
         self.held.append(("move", tuple(pos)))
         return 0.0
+    def move_to(self, pos, **kw):
+        self.held.append(("move", tuple(pos)))
+        return None
     def release_all(self, quiet=True):
         self.held.append(("release_all",))
         return 0
@@ -287,7 +290,7 @@ class Runner:
         self.s.sim.release_all(quiet=True)
 
     def click_client(self, xy, note: str = "") -> None:
-        """点客户区坐标（会自动换算成屏幕坐标）。"""
+        """点客户区坐标（会自动换算成屏幕坐标）。点完**把鼠标移回左上角**（见 _park_pointer）。"""
         self.s.stop.check()
         sx, sy = client_to_screen(self.s.hwnd, int(xy[0]), int(xy[1])) if self.s.hwnd else xy
         self.log.event("click", at=[sx, sy], note=note, dry=self.cfg.dry_run)
@@ -295,6 +298,25 @@ class Runner:
             print(f"  [dry-run] 本应点击屏幕 ({sx}, {sy})  ({note})")
             return
         self.s.sim.click((sx, sy))
+        self._park_pointer()
+
+    def _park_pointer(self, note: str = "") -> None:
+        """把鼠标移回**最左上角**并停在那儿。
+
+        【用户要求 2026-10-03】"每次用鼠标操作完之后都要把鼠标移动到最左上角，然后下次
+        需要鼠标的时候再移动到所需位置"。原因：鼠标停在控件上会改变它的外观（悬停高亮、
+        提示条），会干扰后面的画面判据（♥/车格/判页都靠画面）。
+        需要鼠标时再移过去 —— sim.click 本身会先把指针移到目标点再按下。
+        """
+        if not self.cfg.park_pointer or self.cfg.dry_run or self.cfg.replay:
+            return
+        try:
+            px, py = (client_to_screen(self.s.hwnd, *self.cfg.park_at)
+                      if self.s.hwnd else self.cfg.park_at)
+            self.s.sim.move_to((int(px), int(py)))
+            self.log.event("park_pointer", at=[int(px), int(py)], note=note)
+        except Exception as exc:                    # 归位失败不影响主流程
+            self.log.event("park_pointer_fail", err=str(exc)[:120])
 
     def click_match(self, name: str, frame: Optional[np.ndarray] = None,
                     note: str = "") -> bool:
@@ -1500,6 +1522,8 @@ class Runner:
         print("=" * 78)
         if not cfg.dry_run:
             print("提示：随时按 F1 立即中止；目标窗口不在前台时全部动作会自动暂停。")
+        if not cfg.dry_run:
+            self._park_pointer("开跑前先把鼠标归位到左上角")   # 免得一开始就悬停在某个控件上
         try:
             # 【顺序很重要】车检必须在"菜单可见"的时候做 —— 进了赛事/挑战之后，左上角那块
             # 车名面板就不存在了，check_car_22b 必然失败并把整个运行停掉。
