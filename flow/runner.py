@@ -805,20 +805,33 @@ class Runner:
             thr = float(getattr(det, "threshold", 0.85) or 0.85)
             ox, oy = self.cfg.heart_off
             rw, rh = self.cfg.heart_roi
+            ox2, oy2, rw2, rh2 = getattr(self.cfg, "heart_roi2", (540, 370, 70, 60))
+
+            def _score(bx, by, x, y, w, h):
+                roi = frame[by + y:by + y + h, bx + x:bx + x + w]
+                if det is None or not roi.size:
+                    return float("nan")
+                try:
+                    hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
+                    if hit is None:
+                        return float("nan")
+                    s = float(getattr(hit, "score", float("nan")))
+                    if getattr(self.s.matcher, "ascending", False):
+                        s = 1.0 - s
+                    return s
+                except Exception:
+                    return float("nan")
+
             out = []
             for r, row in enumerate(rows):
                 for c, (bx, by, bw, bh) in enumerate(sorted(row)):
-                    roi = frame[by + oy:by + oy + rh, bx + ox:bx + ox + rw]
-                    sc = float("nan")
-                    if det is not None and roi.size:
-                        try:
-                            hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
-                            if hit is not None:
-                                sc = float(getattr(hit, "score", float("nan")))
-                                if getattr(self.s.matcher, "ascending", False):
-                                    sc = 1.0 - sc
-                        except Exception:
-                            sc = float("nan")
+                    sc = _score(bx, by, ox, oy, rw, rh)
+                    # 【2026-10-03 用户指路】当前驾驶的车辆被收藏时，♥ 画在驾驶图标的左边；
+                    # 判据要「两个位置都查」。实机图实测：当前车 标准位 0.271 / 左侧位 0.995；
+                    # 普通车 1.000 / 0.778。 → 两处取最大值，>= 阈值就算已收藏。
+                    sc2 = _score(bx, by, ox2, oy2, rw2, rh2)
+                    if sc2 == sc2 and (sc != sc or sc2 > sc):
+                        sc = sc2
                     out.append((r, c, bx, by, bw, bh, bool(sc == sc and sc >= thr), sc))
             return out
         except Exception:
@@ -1234,6 +1247,19 @@ class Runner:
             for t in tiles:
                 if t[6]:                        # 有 ♥ → 用户标过"已点满"
                     continue
+                # 【2026-10-03 用户实测提问："为什么要反复对目前驾驶的车辆添加收藏和取消收藏"】
+                # 根因：**当前车**（我们刚上的那台）在列表第一屏固定在 (0,0)，它的右下角
+                # 图标排布与别格不同（轮胎图标占了 ♥ 的位置）→ 标准位置读 0.75~0.87，
+                # 和"普通未收藏车"（~0.21）**在整格搜里也分不开** → 被当成待处理车 →
+                # 进它的「选择操作」（那台车没有「上车」）→ 回车变成 添加/取消收藏 来回切。
+                # 对策：第一屏的 (0,0) 只要 ♥ 读数落在"模糊带"0.5~0.9，就判为当前车、不碰。
+                # （第一屏之后列表已滚动，当前车不在视野，不适用。）
+                if attempt == 1 and (t[0], t[1]) == (0, 0) and 0.5 <= t[7] < 0.90:
+                    skipped += 1
+                    self.log.event("grid_skip_current_car", cell=[0, 0],
+                                   heart_score=round(t[7], 3), why="首屏0,0模糊带=当前车")
+                    print(f"  [找] 第 1 屏：跳过 (0,0)（♥ 分 {t[7]:.3f}，模糊带=当前车）")
+                    continue
                 if skip_seed_cell is not None and (t[0], t[1]) == skip_seed_cell:
                     skipped += 1                # 首次进列表的光标格 = 当前车辆，不碰（bug②）
                     self.log.event("grid_skip_current_car", cell=[t[0], t[1]],
@@ -1365,7 +1391,25 @@ class Runner:
         # 那时"↓ 一次"就跑到了「查看车辆」，回车就进了看车界面，卡住。
         # 所以：先按 ↓×1 试，不做数就 Esc 退出来，再用 ↓×0 试一次（总能有对的）。
         # 每种组合之后都用"那一格有没有出现 ♥"复核。
-        for attempt, downs in enumerate((1, 0)):
+        # 【2026-10-03 用户实测："为什么要反复对目前驾驶的车辆添加收藏和取消收藏"】
+        # 原来是 (1, 0) 两轮重试：第 1 轮 ※ 没判到 ♥（当前车的 ♥ 判据不可靠）→
+        # 第 2 轮改成不按 ↓ → 正好又点了一次「添加至收藏」（此时它已变成「取消收藏」）
+        # → 把刚加上的收藏**又取消了**，而且会来回反复。
+        # 现在**只做一次**；判不到 ♥ 就如实记 favorite_unverified 收手（宁可这台车
+        # 下次再被挑到重做，也绝不来回切换收藏状态）。
+        # 【2026-10-03】按几下 ↓ 取决于目标是不是"当前车"：
+        #   当前车（列表第一屏 (0,0)、♥ 读数落在 0.5~0.9 模糊带）→ 菜单 3 项，
+        #   「添加至收藏」就在**第一项**（用户实测口径：当前车无「上车」项）→ ↓×0；
+        #   普通车（菜单 5 项，首项是「上车」）→ ↓×1 才到「添加至收藏」。
+        # 用 ♥ 读数自动判，不猜。
+        downs_to_use = 1
+        for _t in self._grid_tiles(self.frame()):
+            _f = self._title_crop(self.frame(), _t[2], _t[3], _t[4], _t[5])
+            if _f is not None and self._fp_diff(_f, self._last_car_fp) < self.cfg.fp_same_tol:
+                if 0.5 <= _t[7] < 0.90:
+                    downs_to_use = 0
+                break
+        for attempt, downs in enumerate((downs_to_use,)):
             self.press(self.cfg.confirm_key,
                        f"打开「选择操作」（加收藏·第 {attempt + 1} 次：↓×{downs}）")
             self.sleep(0.9)

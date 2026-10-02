@@ -269,8 +269,8 @@ try:
         ck("新截图：光标落在最左那格（= 当前车辆）", _c3 == (0, 0), f"光标格 {_c3}")
         _t00 = [t for t in _t3 if (t[0], t[1]) == (0, 0)]
         if _t00:
-            ck("当前车辆那格在标准 ♥ 位置读不出♥（所以要靠 seed 跳过）",
-               not _t00[0][6], f"score {_t00[0][7]:.3f} < 阈值 {_r3.s.dets['fav_heart'].threshold}")
+            # 【2026-10-03 更新】旧断言（当前车读不出 ♥）已被用户指路推翻：
+            # 判据改成「标准位 + 驾驶图标左侧位取最大值」，当前车现在能读出 ♥。
             _fp0 = _r3._title_crop(_im3, _t00[0][2], _t00[0][3], _t00[0][4], _t00[0][5])
             _r3._seen_cars.append(_fp0)          # 模拟 change_car 的 seed
             _cands = [t for t in _t3 if not t[6]
@@ -281,6 +281,32 @@ try:
             ck("新截图能检出最左那格", False, "没检出 (0,0)")
 except Exception as _e:
     ck("当前车辆跳过自检可运行", False, repr(_e))
+
+print()
+print("⑭ 当前车的 ♥ 判据：标准位 + 驾驶图标左侧位（用户 2026-10-03 指路）")
+try:
+    _IMG4 = ("C:/Users/lziha/AppData/Local/Hermes Agent CN Desktop/data/hermes-home/"
+             "images/upload_20261003_020318_24.png")
+    _im4 = _cv2.imread(_IMG4) if _os.path.isfile(_IMG4) else None
+    if _im4 is None:
+        print("       跳过（找不到用户截图）")
+    else:
+        _cfg4 = RunConfig()
+        _cfg4.log_dir = tempfile.mkdtemp(prefix="vauto_selftest4_")
+        _r4 = Runner(build_offline_stack(), _cfg4)
+        _t4 = _r4._grid_tiles(_im4)
+        _cur = [t for t in _t4 if (t[0], t[1]) == (0, 0)]
+        ck("当前车（已收藏，♥ 画在驾驶图标左侧）能读出 ♥",
+           bool(_cur) and _cur[0][6],
+           (f"score {_cur[0][7]:.3f}" if _cur else "没检出 (0,0)"))
+        _oth = [t for t in _t4 if (t[0], t[1]) != (0, 0)]
+        ck("同屏其它已收藏车也照样读出 ♥（没改坏）",
+           all(t[6] for t in _oth), f"{sum(1 for t in _oth if t[6])}/{len(_oth)}")
+        _cand = [t for t in _t4 if not t[6]]
+        ck("这一屏（全都收藏过）没有「未收藏」误报",
+           not _cand, f"误报 {[(t[0], t[1], round(t[7], 3)) for t in _cand]}")
+except Exception as _e:
+    ck("当前车 ♥ 判据自检可运行", False, repr(_e))
 
 print("\n⑩ 鼠标用完归位到左上角（用户要求：悬停会改控件外观、干扰画面判据）")
 try:

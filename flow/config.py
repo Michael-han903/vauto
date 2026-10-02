@@ -104,6 +104,11 @@ class RunConfig:
     tile_h_max: int = 600
     heart_off: Tuple[int, int] = (560, 340)   # 车格内 ♥ 搜索区偏移（实测 ♥ 在 +(606,378)）
     heart_roi: Tuple[int, int] = (110, 80)    # ♥ 搜索区大小
+    # 【2026-10-03 用户指路 + 实机图实测】当前驾驶的车辆被收藏时，♥ 画在
+    # **驾驶图标（方向盘）的左边** —— 标准位被方向盘占了（读数 0.271~0.78 噪声）。
+    # 这里再查一个「左侧位」（x, y, w, h，相对车格角点）：实测 当前车 0.995 /
+    # 普通车 0.778~0.804 → 两处取最大值，>= 阈值就算已收藏。
+    heart_roi2: Tuple[int, int, int, int] = (540, 370, 70, 60)
     grid_walk_max: int = 30             # 走到目标车格最多按几次方向键
     grid_walk_dwell: float = 0.45       # 每次方向键后的等待（够黄框重画）
     grid_walk_keys: Tuple[str, ...] = ("down", "right")   # 试键顺序（闭环验证，不依赖语义假设）
@@ -148,6 +153,7 @@ class RunConfig:
         self.grid_area = tuple(int(v) for v in self.grid_area)
         self.heart_off = tuple(int(v) for v in self.heart_off)
         self.heart_roi = tuple(int(v) for v in self.heart_roi)
+        self.heart_roi2 = tuple(int(v) for v in self.heart_roi2)
         self.grid_walk_keys = tuple(str(v) for v in self.grid_walk_keys)
         if self.phase not in ("farm", "spend", "both"):
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
