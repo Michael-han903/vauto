@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T22:05:23",
+  "generated_at": "2026-10-02T22:57:48",
   "scale": 1.0,
   "coarse_scale": 0.5,
   "matcher": {
@@ -7,7 +7,7 @@
     "method": "TM_CCOEFF_NORMED"
   },
   "frames_dir": "golden_frames",
-  "elapsed_seconds": 30.63,
+  "elapsed_seconds": 25.38,
   "last_run": [
     "popup_rate_event"
   ],
@@ -917,39 +917,39 @@
       "name": "popup_rate_event",
       "file": "templates/popup_rate_event.png",
       "size": [
-        1390,
-        830
+        1372,
+        235
       ],
       "scale": 1.0,
-      "threshold": 0.738,
-      "release_threshold": 0.678,
+      "threshold": 0.817,
+      "release_threshold": 0.757,
       "roi": [
-        1217,
-        757,
-        1414,
-        854
+        1228,
+        762,
+        1396,
+        259
       ],
       "search": "roi",
-      "match_ms": 45.44,
+      "match_ms": 15.44,
       "confirm_frames": 2,
       "pos_scenes": [
         "event_entry"
       ],
       "pos": {
-        "n": 1,
-        "min": 0.9999997019767761,
-        "p05": 0.9999997019767761,
-        "median": 0.9999997019767761,
-        "p95": 0.9999997019767761,
-        "max": 0.9999997019767761
+        "n": 2,
+        "min": 1.0,
+        "p05": 1.0,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
       },
       "neg": {
         "n": 239,
-        "min": -0.2075459361076355,
-        "p05": -0.12077738419175148,
-        "median": 0.07168072462081909,
-        "p95": 0.15707017481327054,
-        "max": 0.4766545593738556
+        "min": -0.4292570948600769,
+        "p05": -0.4292570948600769,
+        "median": -0.005492938216775656,
+        "p95": 0.2157970756292342,
+        "max": 0.6346076726913452
       },
       "detect_rate": 1.0,
       "false_positive_rate": 0.0,

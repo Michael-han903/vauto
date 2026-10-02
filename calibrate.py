@@ -104,7 +104,10 @@ TEMPLATE_POSITIVE = {
     # 共性坑：**0.5 粗搜尺度下"黑条+白字/纯色块"会退化成"黑块+白影"，跟别的黑条撞车**
     # （负样本能到 0.99）。所以进赛事改成"每一步用画面变化当闸门 + 这一步用真判据复核"。
     # 离开赛事后的「为挑战评分?」弹窗（默认选中「取消」，按一次回车就过）
-    "popup_rate_event":      ["event_entry/entry_10_rate_dialog.png"],
+    # 两张都要进正样本：同一弹窗的两次截图，**高亮行不同**（一次「点赞」一次「取消」）——
+    # 模板裁的是"标题条+说明文字"（与高亮无关），所以两张都应该匹配得上，正好验证这一点。
+    "popup_rate_event":      ["event_entry/entry_10_rate_dialog.png",
+                              "event_entry/entry_11_rate_dialog_cancel.png"],
     "panel_search_title":    ["event_entry/entry_05.png", "event_entry/entry_06.png"],
     "car_current_menu":   ["current_car_22b_menu/*",
                            "menu_vehicle_tab/menu_vehicle_tab_*",     # 用户截图（车辆 tab）

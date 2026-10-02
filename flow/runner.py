@@ -723,54 +723,48 @@ class Runner:
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
 
-    def clear_blocking_dialog(self, note: str = "", patience: float = 25.0) -> bool:
-        """把挡路的「等待输入」界面清掉（默认按回车，键由 cfg.dialog_cancel_key 决定）。
+    def clear_blocking_dialog(self, note: str = "", patience: float = 45.0) -> bool:
+        """等「挡路弹窗」出现并关掉它（**只看真判据**；按键由 cfg.dialog_cancel_key 决定，默认回车）。
 
-        【用户要求】不管高亮在哪一行都按回车（2026-10-02）。
-        记录的观察：同一个「为挑战评分?」弹窗，两次截图的高亮行不同（一次在「取消」、
-        一次在「**点赞**」）。按回车 = 确认**当前高亮的那一项**，所以高亮在「点赞」时
-        回车会点赞。用户明确接受这个行为，因此默认用回车；要改成 Esc（取消，与高亮无关）
-        只需把 cfg.dialog_cancel_key 改成 "esc"。
-
-        做法：在 `patience` 秒内反复观察 ——
-        * 回到菜单了 → 完成；
-        * 评分弹窗判据命中 → 按键；
-        * 画面静止（1.2 秒内分块最大差 < 阈值）= 有东西在等输入 → 按键；
-        * 画面在动（加载/过场/自由驾驶）→ 继续观察，不动手。
-        每次动手都存证据图 logs/clear_dialog_*.png。
+        2026-10-02 三次实测教训（都写在这里免得再踩）：
+        1) 只检查一次不行 —— 「退出赛事 → 弹窗」是淡入过程，那一刻画面在动（日志 dismiss_skip
+           reason=画面在动）。
+        2) 「画面静止 = 有东西在等输入」这个判据对它**是错的**：这个弹窗盖在**活的自由驾驶
+           画面**上（背景一直在动）→ 永远判成"在动" → 25 秒里一次都没动手（日志
+           dialog_cleared acted=0）。所以必须用真判据 popup_rate_event。
+        3) 判据模板要裁**与高亮无关**的部分（标题条 + 说明文字，不含三行选项）——
+           同一个弹窗两次截图的高亮行不一样（一次「点赞」、一次「取消」）。
         """
         if self.cfg.replay:
             return False
-        deadline = time.monotonic() + patience
+        det = self.s.dets.get("popup_rate_event")
         acted = 0
+        deadline = time.monotonic() + patience
         while time.monotonic() < deadline:
-            in_menu, sc = self._in_menu_now()
+            in_menu, _sc = self._in_menu_now()
             if in_menu:
                 self.log.event("dialog_cleared", note=note, in_menu=True, acted=acted)
                 return True
-            f1 = self.frame()
-            self.sleep(1.2)
-            f2 = self.frame()
-            frozen = (block_max_abs_diff(f1, f2, blocks=self.cfg.nav_change_blocks)
-                      < self.cfg.nav_change_threshold)
-            hit = None
-            if "popup_rate_event" in self.s.dets:
-                hit = self.observe("popup_rate_event", f2)
-            if hit is None and not frozen:
-                self.sleep(0.5)
-                continue                     # 画面在动（加载/过场/自由驾驶）→ 不动手
+            frame = self.frame()
+            hit = det.observe(frame) if det is not None else None
+            if hit is None:
+                self.sleep(0.6)
+                continue
             acted += 1
-            shot = self._save_evidence(f2, f"clear_dialog{acted}")
-            print(f"  [兜底] {note or '挡路界面'}："
-                  f"{'评分弹窗判据命中' if hit else '画面静止'}"
-                  f" → 按 {self.cfg.dialog_cancel_key} 关掉  证据: {shot}")
-            self.log.event("clear_dialog", note=note, rate_judge=bool(hit),
+            shot = self._save_evidence(frame, f"clear_dialog{acted}")
+            print(f"  [兜底] {note or '挡路弹窗'}：评分弹窗判据命中（{hit.score:.3f}）"
+                  f"→ 按 {self.cfg.dialog_cancel_key} 关掉  证据: {shot}")
+            self.log.event("clear_dialog", note=note, score=round(hit.score, 3),
                            index=acted, shot=shot, key=self.cfg.dialog_cancel_key)
-            self.press(self.cfg.dialog_cancel_key, "关掉等待输入的界面（取消）")
-            self.sleep(1.5)
+            self.press(self.cfg.dialog_cancel_key, "关掉「为挑战评分?」等弹窗")
+            if self._wait_gone("popup_rate_event", 6.0):
+                self.log.event("dialog_cleared", note=note, in_menu=False, acted=acted)
+                print("  [兜底] 弹窗已消失 ✅")
+                return True
             if acted >= 3:
                 break
-        self.log.event("dialog_cleared", note=note, in_menu=False, acted=acted)
+        self.log.event("dialog_cleared", note=note, in_menu=False, acted=acted, gave_up=True)
+        print(f"  [!] {note or '挡路弹窗'}：等了 {patience:.0f}s 没等到评分弹窗（也可能它已不在）")
         return False
 
     # ---------------- 进赛事（自动开局）---------------- #
