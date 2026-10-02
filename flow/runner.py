@@ -2000,11 +2000,12 @@ class Runner:
             # 车名面板就不存在了，check_car_22b 必然失败并把整个运行停掉。
             # 2026-10-02 实测：自动进赛事成功之后卡在这里（日志 car_check_failed，
             # in_menu=false），一次 W 都没按 —— 就是"比赛开始了但程序一动不动"。
-            if cfg.a_enabled and cfg.require_car_22b:
-                if not self.check_car_22b():
-                    print("[!] 当前车辆校验未通过：请手动把车换成 22B 再跑（或 --no-car-check）")
-                    if not cfg.dry_run:
-                        return {"stopped": "car_check_failed", **self.stats}
+            if cfg.a_enabled and cfg.require_car_22b and not self.check_car_22b():
+                # 【2026-10-03 用户口径】"技能点不足的时候就要去切换成斯巴鲁22B跑挑战" ——
+                # 不在 22B 时**不再直接退出**：下面 A 阶段开始前会自动换车（set_car_22b 幂等，
+                # 已经在 22B 会直接跳过）。这里只留一条记录，方便事后回看。
+                print("  [i] 当前不是 22B → A 阶段开始前会自动切回 22B")
+                self.log.event("car_check_deferred", note="A 前自动切回 22B")
 
             # ---- 主循环：[进赛事 → 跑 N 轮] → [B 一直解锁到「技能点不足」] → [换回 22B] ----
             # 用户口径（2026-10-02）："直到弹出提示说技能点不足再回去跑挑战"。
@@ -2015,6 +2016,13 @@ class Runner:
                     print(f"\n########## 循环 {cyc}/{cyc_total}"
                           f"（上一轮 B 已刷到「技能点不足」→ 回来再跑挑战）##########")
                 if cfg.a_enabled:
+                    # 【2026-10-03】A 之前确保用的是 22B —— 用户要的闭环就是
+                    # "B 刷到技能点不足 → 切回斯巴鲁 22B → 去跑挑战"。幂等：在 22B 就跳过。
+                    if cfg.require_car_22b and not cfg.dry_run:
+                        print("  [A] 先确保当前车是 22B（不在就自动切）…")
+                        if not self.set_car_22b():
+                            print("  [!] 切回 22B 失败 → 停下（证据见 logs/）")
+                            return {"stopped": "to_22b_failed", **self.stats}
                     if cfg.enter_event:
                         # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
                         if not self.enter_event():
