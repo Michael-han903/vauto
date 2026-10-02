@@ -464,13 +464,20 @@ class Runner:
         return {"cars_done": self.stats["cars_done"], "phase": "spend"}
 
     def _ensure_vehicle_tab(self) -> bool:
-        """确保停在主菜单「车辆」标签页（用 tile_mastery 的出现来验证）。"""
+        """确保停在主菜单「车辆」标签页（用 tile_mastery 的出现来验证）。
+
+        先用单帧 probe 快速判断（不动去抖状态）：已经在车辆页就**不点**那一下，
+        避免每次换车都白点一次标签。
+        """
+        det = self.s.dets["tile_mastery"]
         for attempt in range(3):
             frame = self.frame()
-            if self.observe("tile_mastery", frame) is not None:
+            score, _ = det.probe(frame)
+            if score >= det.threshold:
+                self.observe("tile_mastery", frame)          # 让去抖状态跟上
                 return True
             if attempt == 0:
-                print("  [B] 鼠标点「车辆」标签")
+                print(f"  [B] 不在车辆页（tile_mastery {score:.3f}）→ 鼠标点「车辆」标签")
                 self.click_client(self.cfg.tab_vehicle_click, "车辆 tab")
             else:
                 self.press("esc", "退回主菜单")
@@ -549,11 +556,44 @@ class Runner:
             time.sleep(max(1.0, self.cfg.poll))
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.car_change_timeout, settle=1.0, scale=0.5, poll=0.3)
-            self._wait_for("tile_mastery", self.cfg.car_change_timeout)
+            # 【2026-10-02 第二次真跑发现】上车后游戏**不保证**停在「车辆」标签页 ——
+            # 实测落回了「我的车辆」列表页，靠用户手动点「车辆」才继续（日志里那一格没有
+            # 程序的点击记录，说明程序当时只是在被动等）。所以这里必须主动切回去，
+            # 并把"当时在哪一页"写进日志（下次不用猜）。
+            frame = self.frame()
+            sc = {}
+            for nm in ("tile_mastery", "tile_change_car", "page_title_garage",
+                       "page_title_mastery"):
+                d = self.s.dets.get(nm)
+                if d is not None:
+                    score, _ = d.probe(frame)
+                    sc[nm] = round(score, 3)
+            in_tab = sc.get("tile_mastery", 0.0) >= self.s.dets["tile_mastery"].threshold
+            in_list = (sc.get("page_title_garage", 0.0)
+                       >= self.s.dets["page_title_garage"].threshold)
+            self.log.event("after_load_page", vehicle_tab=in_tab, garage_list=in_list, scores=sc)
+            print(f"  [B] 上车后所在页: "
+                  f"{'车辆页' if in_tab else ('我的车辆列表' if in_list else '未知')}"
+                  f"  {sc}")
+            if not in_tab:
+                if in_list:
+                    self.press("esc", "从「我的车辆」列表退回")
+                    self.sleep(self.cfg.poll)
+                if not self._ensure_vehicle_tab():
+                    shot = self._save_evidence(self.frame(), "after_load_no_vehicle_tab")
+                    print(f"  [!] 上车后回不到「车辆」页（证据: {shot}）")
+                    self.log.event("after_load_stuck", shot=shot)
+                    return False
         return True
 
     def unlock_current_car(self) -> str:
         """进精通页并解锁；返回 unlocked / already / no_points / no_page。"""
+        # 进精通页的前提是「车辆」页可见（tile_mastery 只在这一页）→ 先主动确保
+        if not self.cfg.replay and not self._ensure_vehicle_tab():
+            shot = self._save_evidence(self.frame(), "no_vehicle_tab_before_mastery")
+            print(f"  [!] 到不了「车辆」页（证据: {shot}）")
+            self.log.event("no_vehicle_tab", shot=shot)
+            return "no_page"
         if not self.click_match("tile_mastery", note="点「车辆熟练度」"):
             return "no_page"
         if self._wait_for("page_title_mastery", self.cfg.page_timeout) is None:
