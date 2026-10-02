@@ -335,25 +335,28 @@ try:
         return st
 
     def _col_major(st, key):
-        """模拟"列优先"语义：→ 换列（保持行）、↓ 列内往下到底跳下一列、↑/← 反向。"""
+        """【2026-10-03 实测语义】车库是**纵向**列表：
+        ↓ 列内往下、到底跳到下一列的第一个；↑ 是它的反向；**→/← 在车库列表里不动光标**。"""
         r, c = st["cur"]
-        if key == "right":
-            st["cur"] = (r, min(_COLS - 1, c + 1))
-        elif key == "left":
-            st["cur"] = (r, max(0, c - 1))
-        elif key == "down":
+        if key == "down":
             if r + 1 >= _ROWS:
-                st["cur"] = (0, min(_COLS - 1, c + 1))
+                st["cur"] = (0, c + 1) if c + 1 < _COLS else (r, c)
             else:
                 st["cur"] = (r + 1, c)
         elif key == "up":
-            st["cur"] = (r - 1, c) if r > 0 else (_ROWS - 1, max(0, c - 1))
+            if r == 0:
+                st["cur"] = (_ROWS - 1, c - 1) if c > 0 else (r, c)
+            else:
+                st["cur"] = (r - 1, c)
+        # right / left：实测不动（这里保持不动，正是要测"别再依赖它们"）
 
     _s1 = _sim((0, 0), _col_major)
     _ok1 = _r6._walk_to_tile("cell_2_1")
     ck("走路能走到 (2,1)（= 用户那次失败的坐标）", _ok1 and _s1["cur"] == (2, 1),
        f"cur={_s1['cur']} 按键 {_s1['presses']}")
-    ck("而且是**先换列再换行**", _s1["presses"][:1] == ["right"], f"按键序列 {_s1['presses'][:4]}")
+    ck("走路只用 ↓/↑（实测 →/← 不动光标）",
+       bool(_s1["presses"]) and all(k in ("down", "up") for k in _s1["presses"]),
+       f"按键序列 {_s1['presses'][:6]}")
 
     _s2 = _sim((0, 0), _col_major)
     _ok2 = _r6._walk_to_tile("cell_0_3")

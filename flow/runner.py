@@ -678,6 +678,20 @@ class Runner:
         except Exception:
             return float("inf")
 
+    MAX_SEEN = 2
+
+    def _remember_done(self, fp) -> None:
+        """记下"处理过的那台车"，但**只保留最近 2 条**（种子 + 最近的）。
+
+        为什么不累积（2026-10-03 实测）：车库里有多台**同款同名**的车
+        （如 3 辆 CLASS 10 RACE CAR），它们的车名指纹**一模一样** →
+        累积起来会把它们互相判成"已处理"而跳过 —— 日志里 seen=1 却跳掉了 5 台没 ♥ 的车。
+        只留最近 2 条：既能避免"刚处理完又立刻重来"，又不会误杀掉同名车。
+        """
+        if fp is None:
+            return
+        self._seen_cars = (list(self._seen_cars[:1]) + [fp])[-self.MAX_SEEN:]
+
     def _fp_matches(self, fp, group) -> bool:
         """指纹 fp 是否与集合 group 里某一台是同一台车。"""
         if fp is None:
@@ -854,12 +868,13 @@ class Runner:
             if cbox is None:
                 self.log.event("grid_walk_fail", why="cursor_unknown")
                 return False
-            if tbox is None:                      # 目标不在视野 → 往右找下一列
+            if tbox is None:                      # 目标滚出视野了 → 沿纵向找回来
                 stuck += 1
-                if stuck > 3:
-                    self.log.event("grid_walk_fail", why="target_lost")
+                if stuck > 8:
+                    self.log.event("grid_walk_fail", why="target_lost", stuck=stuck)
                     return False
-                self.press("right", "目标不在视野 → 往右找")
+                # 不记得往前还是往后走丢的 → 两下 ↓、两下 ↑ 地扫（right/left 在车库列表里不动光标）
+                self.press("down" if (stuck % 4) < 2 else "up", "目标不在视野 → 纵向找回来")
                 self.sleep(self.cfg.grid_walk_dwell)
                 continue
             cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
@@ -875,15 +890,18 @@ class Runner:
             same_row = _ov(cbox[1], cbox[1] + cbox[3], tbox[1], tbox[1] + tbox[3]) > 0.5
             if same_col and same_row:
                 return True                        # 光标已经在目标格上
-            # 【用户口径 2026-10-03】"应该先移动到对应列" —— 列优先：先 →/← 换列，
-            # 再在列内 ↓/↑ 换行。写反了会出现"列没对上就按↓"，落到别的列去（车换不过去）。
-            # 同列/同行用**矩形重叠**判断，不用中心距离：同列内靠边的格子中心差能有 300 像素。
+            # 【2026-10-03 实测修正】车库列表是**纵向**的：`↓` 列内往下、到底跳下一列，
+            # `↑` 是它的反向；而 **`→` / `←` 在车库列表里根本不动光标**
+            # （日志：连按 4 次 right，光标框一直是 (816,424,648,488) 一动不动 → target_lost）。
+            # 所以走路只用 ↓/↑：
+            #   * 目标在别的列 → 先沿着 ↓/↑ "换列"（列优先，用户口径）；
+            #   * 列对上了 → 再按行 ↓/↑。
             keys = []
             if not same_col:
-                keys.append("right" if tx > cx else "left")
-            if not same_row:
+                keys.append("down" if tx > cx else "up")
+            elif not same_row:
                 keys.append("down" if ty > cy else "up")
-            keys += [k for k in self.cfg.grid_walk_keys if k not in keys]
+            keys += [k for k in ("down", "up") if k not in keys]
             self.log.event("grid_walk_step", same_col=bool(same_col), same_row=bool(same_row),
                            keys=keys[:2], cursor=list(cbox), target=list(tbox))
             progressed = False
@@ -1001,7 +1019,7 @@ class Runner:
                     if (_r, _c) == tuple(_c0):
                         _fp0 = self._title_crop(_f0, _bx, _by, _bw, _bh)
                         if _fp0 is not None:
-                            self._seen_cars.append(_fp0)
+                            self._remember_done(_fp0)
                             self.log.event("car_fp_seed", cell=list(_c0),
                                            note="首次进列表：光标那格=当前车辆，跳过")
                             print(f"  [找] 首次进列表，光标在 ({_r},{_c}) = 当前车辆 → 记为已处理")
@@ -1067,8 +1085,8 @@ class Runner:
                     print("  [找] 这台进不去 → 记下并换下一台")
                     self.log.event("grid_target_unreachable", row=r, col=c, why="enter_failed")
                     continue
-                if self._last_car_fp is not None:   # 记进“本次会话已处理”（旧校验机制，保留）
-                    self._seen_cars.append(self._last_car_fp)
+                if self._last_car_fp is not None:   # 记进“刚处理过”（旧校验机制，但只留最近 2 条）
+                    self._remember_done(self._last_car_fp)
                     self.log.event("car_fp_record", total=len(self._seen_cars))
                 return True
             # 这一屏都收藏过了 → 往右滚一列，把后面的车拉进来
