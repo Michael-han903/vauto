@@ -10,15 +10,24 @@
 ```
 visual_auto_toolkit/
 ├─ vauto/
-│  ├─ __init__.py     统一导出
+│  ├─ __init__.py     统一导出（PEP 562 惰性加载）
 │  ├─ capture.py      mss 窗口抓帧 + win32gui 窗口矩形/客户区坐标 + PrintWindow 备选
 │  ├─ matching.py     OpenCV 模板匹配（多尺度 + NMS + alpha mask + 中文路径）
+│  ├─ vision.py       识别层组合件：ROI + 降采样 + 滞回去抖(VisualDetector) + 画面变化检测/dHash + wait_stable
 │  ├─ timing.py       随机延时 / 贝塞尔轨迹 / 非线性时间轴 / 可中断 sleep（纯函数可单测）
 │  ├─ input_sim.py    pynput 鼠标键盘仿真（抖动点击、贝塞尔移动、粘键兜底）
 │  ├─ focus.py        win32gui 前台焦点检测与「非前台即暂停」守卫
 │  ├─ safety.py       F1 全局急停 + AbortedByUser
 │  └─ recorder.py     帧录制器（素材工作流：采集 golden_frames 原始帧）
+├─ templates/         模板 + thresholds.json（标定产物：阈值/ROI/尺度/去抖参数）
+├─ golden_frames/     素材：各场景原始帧（不入 git，体积大）
+├─ docs/              业务流程设计说明书 / 业务实测要点 / 标定报告
 ├─ demo_skeleton.py   调用骨架（业务逻辑全是 TODO 占位）
+├─ record_scenes.py   引导式素材录制（只截图，不模拟输入）
+├─ record_gui.py      素材录制图形界面
+├─ template_crop_gui.py 模板裁剪器（从 golden_frames 框选元素）
+├─ calibrate.py       模板标定：两段式（粗搜 ROI → ROI 内精确），产出 thresholds.json
+├─ selftest_*.py      自检（timing / stack / vision / e2e）
 ├─ requirements.txt
 └─ README.md
 ```
@@ -163,12 +172,45 @@ py -3.14 record_gui.py        # 下拉选窗口 -> 预览画面确认 -> 选中�
 |---|---|---|
 | `selftest_timing.py` | 贝塞尔非直线（最小法向偏移）、非匀速（峰值速度/均速 > 1.5）、端点精确、时间轴单调、时长守恒、像素抖动半径、每 N 轮休息、急停打断 sleep | 否（只需 numpy） |
 | `selftest_stack.py` | 真实全屏/窗口抓帧、通道顺序、模板匹配定位精度（±1px）、多尺度、alpha mask、中文路径、NMS、region 坐标还原、窗口枚举/前台判定/焦点守卫、按键状态机与粘键兜底、F1 急停全链路 | 否（用桩 Controller 替换底层，**不会动你的鼠标键盘**） |
+| `selftest_vision.py` | 坐标往返、`VisualDetector` 滞回（连续 2 帧确认/释放）、ROI 与全帧结果一致（≤3px）、错 ROI 不命中、0.5 尺度与 1.0 尺度位置一致（≤4px）、dHash/灰度差变化检测、`wait_stable` 稳定与超时 | 否（用 StubCapture 回放 golden_frames） |
 | `e2e_demo_test.py` | 端到端跑 `demo_skeleton.py`：抓帧 → 生成模板 → dry-run 匹配 → 调试图 → 优雅退出 | 否（全程 `--dry-run`） |
 
 ```bash
 python selftest_timing.py
 python selftest_stack.py
+python selftest_vision.py
 python e2e_demo_test.py
+```
+
+## 7.5 标定与识别层（运行期怎么用）
+
+模板标定产出 `templates/thresholds.json`，里面每张模板都有：阈值、滞回用的退出阈值、
+搜索区域 ROI、尺度、去抖帧数、检出率/误报率、ROI 内一次匹配耗时。运行期不要手写阈值。
+
+```bash
+py -3.14 calibrate.py --report docs/标定报告.md     # 两段式：0.5 粗搜 ROI → ROI 内全分辨率精确标定
+```
+
+要点（均为本机实测，客户区 3840x2160）：
+
+| 事项 | 数据 |
+|---|---|
+| 全帧匹配 vs ROI 匹配 | 340~670 ms vs **7~17 ms**（约 50 倍） |
+| 标定耗时 | 旧脚本 13 张模板 7 分钟跑不完 → 现在 14 张 **35 秒** |
+| 阈值与尺度 | **绑定**。同一模板 1.0 尺度 1.000、0.5 尺度 0.879，换尺度必须重新标定 |
+| 降采样 | 帧与模板必须**同时**缩放；只缩帧不缩模板会让分数从 1.000 崩到 0.34 |
+| 固定位置元素 | 用 ROI 就够，不必降采样（保真且更快） |
+| 画面变化检测 | dHash：4K 彩帧约 15 ms / 1080p 灰度约 2 ms（耗时几乎全在缩小到 64x64） |
+
+```python
+from vauto import TemplateMatcher, VisualDetector, load_image, wait_stable
+import json
+cal = json.load(open("templates/thresholds.json", encoding="utf-8"))
+c = cal["templates"]["hint_unlock_all"]          # 示例：精通页是否还有可解锁
+det = VisualDetector(TemplateMatcher(), "templates/hint_unlock_all.png",
+                     roi=tuple(c["roi"]), scale=cal["scale"],
+                     threshold=c["threshold"], confirm_frames=2, name="有可解锁")
+hit = det.observe(frame)        # 连续 2 帧命中才返回 Match（全分辨率坐标），否则 None
 ```
 
 ## 8. 安全提示

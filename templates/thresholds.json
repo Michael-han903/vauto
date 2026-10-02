@@ -1,0 +1,612 @@
+{
+  "generated_at": "2026-10-02T18:18:33",
+  "scale": 1.0,
+  "coarse_scale": 0.5,
+  "matcher": {
+    "grayscale": true,
+    "method": "TM_CCOEFF_NORMED"
+  },
+  "frames_dir": "golden_frames",
+  "elapsed_seconds": 34.8,
+  "templates": {
+    "btn_retry": {
+      "name": "btn_retry",
+      "file": "templates/btn_retry.png",
+      "size": [
+        196,
+        78
+      ],
+      "scale": 1.0,
+      "threshold": 0.893,
+      "release_threshold": 0.833,
+      "roi": [
+        432,
+        1963,
+        220,
+        102
+      ],
+      "search": "roi",
+      "match_ms": 7.56,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "challenge_result"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.9999905228614807,
+        "p05": 0.9999915391206742,
+        "median": 0.9999960064888,
+        "p95": 0.9999989181756973,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.07889611274003983,
+        "p05": -0.041498863611195695,
+        "median": 0.7825841307640076,
+        "p95": 0.7860980033874512,
+        "max": 0.7860980033874512
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "hint_esc_back": {
+      "name": "hint_esc_back",
+      "file": "templates/hint_esc_back.png",
+      "size": [
+        191,
+        53
+      ],
+      "scale": 1.0,
+      "threshold": 0.859,
+      "release_threshold": 0.799,
+      "roi": [
+        138,
+        1973,
+        505,
+        77
+      ],
+      "search": "roi",
+      "match_ms": 9.76,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "garage_list",
+        "node_active",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 39,
+        "min": 0.9771157503128052,
+        "p05": 0.9771157503128052,
+        "median": 0.9827864170074463,
+        "p95": 0.9999998807907104,
+        "max": 0.9999998807907104
+      },
+      "neg": {
+        "n": 24,
+        "min": 0.08648563921451569,
+        "p05": 0.08983538262546062,
+        "median": 0.5016772747039795,
+        "p95": 0.7411319941282273,
+        "max": 0.741136908531189
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "hint_esc_retry": {
+      "name": "hint_esc_retry",
+      "file": "templates/hint_esc_retry.png",
+      "size": [
+        200,
+        53
+      ],
+      "scale": 1.0,
+      "threshold": 0.878,
+      "release_threshold": 0.818,
+      "roi": [
+        428,
+        1973,
+        224,
+        77
+      ],
+      "search": "roi",
+      "match_ms": 6.74,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "challenge_result"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.9999933838844299,
+        "p05": 0.9999945312738419,
+        "median": 0.9999980926513672,
+        "p95": 0.9999996721744537,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.04603644832968712,
+        "p05": -0.030391800403594963,
+        "median": 0.7545047402381897,
+        "p95": 0.7566754221916199,
+        "max": 0.7566754221916199
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "hint_unlock_all": {
+      "name": "hint_unlock_all",
+      "file": "templates/hint_unlock_all.png",
+      "size": [
+        242,
+        53
+      ],
+      "scale": 1.0,
+      "threshold": 0.73,
+      "release_threshold": 0.67,
+      "roi": [
+        687,
+        1973,
+        266,
+        77
+      ],
+      "search": "roi",
+      "match_ms": 6.95,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 22,
+        "min": 0.9999997615814209,
+        "p05": 0.9999997615814209,
+        "median": 0.9999997615814209,
+        "p95": 0.9999997615814209,
+        "max": 0.9999997615814209
+      },
+      "neg": {
+        "n": 38,
+        "min": -0.04321935400366783,
+        "p05": -0.014715068042278288,
+        "median": 0.021507677622139454,
+        "p95": 0.45944252610206604,
+        "max": 0.45944252610206604
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "hud_marker": {
+      "name": "hud_marker",
+      "file": "templates/hud_marker.png",
+      "size": [
+        572,
+        651
+      ],
+      "scale": 1.0,
+      "threshold": null,
+      "release_threshold": null,
+      "roi": null,
+      "search": "full_frame",
+      "match_ms": null,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "challenge_hud"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.22930148243904114,
+        "p05": 0.3230936825275421,
+        "median": 0.6427012085914612,
+        "p95": 0.6624787241220474,
+        "max": 0.6632378697395325
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.03697207570075989,
+        "p05": -0.03012952022254467,
+        "median": 0.13148808479309082,
+        "p95": 0.2333627909421921,
+        "max": 0.23368114233016968
+      },
+      "detect_rate": null,
+      "false_positive_rate": null,
+      "verdict": "不可用（正样本 p05 仅 0.323 < 0.6：模板在它该出现的地方都匹配不上 —— 裁错区域、尺度不一致，或该元素会变化）",
+      "usable": false
+    },
+    "list_entry": {
+      "name": "list_entry",
+      "file": "templates/list_entry.png",
+      "size": [
+        3401,
+        105
+      ],
+      "scale": 1.0,
+      "threshold": null,
+      "release_threshold": null,
+      "roi": null,
+      "search": "full_frame",
+      "match_ms": null,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "garage_list"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.28237617015838623,
+        "p05": 0.2946740537881851,
+        "median": 0.8185772001743317,
+        "p95": 0.9999988675117493,
+        "max": 0.9999988675117493
+      },
+      "neg": {
+        "n": 45,
+        "min": 0.09200794249773026,
+        "p05": 0.17447766661643982,
+        "median": 0.17610009014606476,
+        "p95": 0.4642976403236389,
+        "max": 0.4656987488269806
+      },
+      "detect_rate": null,
+      "false_positive_rate": null,
+      "verdict": "不可用（正样本 p05 仅 0.295 < 0.6：模板在它该出现的地方都匹配不上 —— 裁错区域、尺度不一致，或该元素会变化）",
+      "usable": false
+    },
+    "node_active": {
+      "name": "node_active",
+      "file": "templates/node_active.png",
+      "size": [
+        156,
+        173
+      ],
+      "scale": 1.0,
+      "threshold": 0.644,
+      "release_threshold": 0.584,
+      "roi": [
+        1356,
+        1081,
+        180,
+        197
+      ],
+      "search": "roi",
+      "match_ms": 6.9,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "node_active",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 27,
+        "min": 0.9999961853027344,
+        "p05": 0.9999961853027344,
+        "median": 0.9999961853027344,
+        "p95": 0.9999997615814209,
+        "max": 0.9999997615814209
+      },
+      "neg": {
+        "n": 32,
+        "min": -0.09905510395765305,
+        "p05": -0.09836760871112346,
+        "median": -0.0703454464673996,
+        "p95": 0.111020166426897,
+        "max": 0.287435382604599
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "node_grid_anchor": {
+      "name": "node_grid_anchor",
+      "file": "templates/node_grid_anchor.png",
+      "size": [
+        839,
+        78
+      ],
+      "scale": 1.0,
+      "threshold": null,
+      "release_threshold": null,
+      "roi": null,
+      "search": "full_frame",
+      "match_ms": null,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "node_active",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 27,
+        "min": 0.31511950492858887,
+        "p05": 0.31511950492858887,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 32,
+        "min": -0.008019575849175453,
+        "p05": 0.0066079275798983875,
+        "median": 0.544307604432106,
+        "p95": 0.8032897114753723,
+        "max": 0.8032897114753723
+      },
+      "detect_rate": null,
+      "false_positive_rate": null,
+      "verdict": "不可用（正样本 p05 仅 0.315 < 0.6：模板在它该出现的地方都匹配不上 —— 裁错区域、尺度不一致，或该元素会变化）",
+      "usable": false
+    },
+    "node_inactive": {
+      "name": "node_inactive",
+      "file": "templates/node_inactive.png",
+      "size": [
+        208,
+        168
+      ],
+      "scale": 1.0,
+      "threshold": 0.599,
+      "release_threshold": 0.539,
+      "roi": [
+        1328,
+        1092,
+        232,
+        194
+      ],
+      "search": "roi",
+      "match_ms": 8.16,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "node_active",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 27,
+        "min": 0.9221470952033997,
+        "p05": 0.9221470952033997,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 32,
+        "min": -0.11480379849672318,
+        "p05": -0.11480379849672318,
+        "median": -0.06279291957616806,
+        "p95": 0.143219881504774,
+        "max": 0.2761910557746887
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "page_title_garage": {
+      "name": "page_title_garage",
+      "file": "templates/page_title_garage.png",
+      "size": [
+        634,
+        90
+      ],
+      "scale": 1.0,
+      "threshold": 0.552,
+      "release_threshold": 0.492,
+      "roi": [
+        243,
+        187,
+        658,
+        114
+      ],
+      "search": "roi",
+      "match_ms": 9.22,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "garage_list"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 1.0,
+        "p05": 1.0,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.3010498881340027,
+        "p05": -0.3002037525177002,
+        "median": 0.01765252649784088,
+        "p95": 0.10316997766494751,
+        "max": 0.10316997766494751
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "page_title_mastery": {
+      "name": "page_title_mastery",
+      "file": "templates/page_title_mastery.png",
+      "size": [
+        545,
+        82
+      ],
+      "scale": 1.0,
+      "threshold": 0.7,
+      "release_threshold": 0.64,
+      "roi": [
+        607,
+        233,
+        569,
+        106
+      ],
+      "search": "roi",
+      "match_ms": 7.69,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "car_mastery_page",
+        "node_active",
+        "node_inactive"
+      ],
+      "pos": {
+        "n": 27,
+        "min": 0.9999998807907104,
+        "p05": 0.9999998807907104,
+        "median": 0.9999998807907104,
+        "p95": 0.9999998807907104,
+        "max": 0.9999998807907104
+      },
+      "neg": {
+        "n": 32,
+        "min": -0.13668091595172882,
+        "p05": -0.1280183047056198,
+        "median": 0.003074658685363829,
+        "p95": 0.39961767196655273,
+        "max": 0.39961767196655273
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "panel_result": {
+      "name": "panel_result",
+      "file": "templates/panel_result.png",
+      "size": [
+        1496,
+        228
+      ],
+      "scale": 1.0,
+      "threshold": 0.535,
+      "release_threshold": 0.475,
+      "roi": [
+        102,
+        308,
+        1520,
+        252
+      ],
+      "search": "roi",
+      "match_ms": 16.93,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "challenge_result"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.997258722782135,
+        "p05": 0.997275573015213,
+        "median": 0.9984621405601501,
+        "p95": 0.999980953335762,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.055940862745046616,
+        "p05": -0.012791273184120655,
+        "median": 0.07145820558071136,
+        "p95": 0.07302679270505905,
+        "max": 0.0733945444226265
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "popup_confirm": {
+      "name": "popup_confirm",
+      "file": "templates/popup_confirm.png",
+      "size": [
+        247,
+        94
+      ],
+      "scale": 1.0,
+      "threshold": 0.914,
+      "release_threshold": 0.854,
+      "roi": [
+        132,
+        1953,
+        271,
+        118
+      ],
+      "search": "roi",
+      "match_ms": 7.2,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "popup_no_resource"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 0.9999999403953552,
+        "p05": 0.9999999403953552,
+        "median": 0.9999999403953552,
+        "p95": 0.9999999403953552,
+        "max": 0.9999999403953552
+      },
+      "neg": {
+        "n": 45,
+        "min": 0.034183721989393234,
+        "p05": 0.05838382840156556,
+        "median": 0.825448215007782,
+        "p95": 0.8277397632598877,
+        "max": 0.8277944922447205
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "popup_no_resource": {
+      "name": "popup_no_resource",
+      "file": "templates/popup_no_resource.png",
+      "size": [
+        1286,
+        125
+      ],
+      "scale": 1.0,
+      "threshold": 0.607,
+      "release_threshold": 0.547,
+      "roi": [
+        1263,
+        897,
+        1310,
+        149
+      ],
+      "search": "roi",
+      "match_ms": 13.22,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "popup_no_resource"
+      ],
+      "pos": {
+        "n": 12,
+        "min": 1.0,
+        "p05": 1.0,
+        "median": 1.0,
+        "p95": 1.0,
+        "max": 1.0
+      },
+      "neg": {
+        "n": 45,
+        "min": -0.12982769310474396,
+        "p05": -0.12982769310474396,
+        "median": 0.04663214832544327,
+        "p95": 0.20272256433963776,
+        "max": 0.2134745717048645
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    }
+  }
+}

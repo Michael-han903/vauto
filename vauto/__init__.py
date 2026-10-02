@@ -74,6 +74,15 @@ _EXPORTS: Dict[str, str] = {
     "ease_curve": "timing",
     "distribute_duration": "timing",
     "interruptible_sleep": "timing",
+    # vision（识别层组合件：ROI / 降采样 / 滞回去抖 / 画面变化检测）
+    "VisualDetector": "vision",
+    "scaled_frame": "vision",
+    "to_full_point": "vision",
+    "to_frame_point": "vision",
+    "frame_signature": "vision",
+    "signature_distance": "vision",
+    "mean_abs_diff": "vision",
+    "wait_stable": "vision",
     # input
     "InputSimulator": "input_sim",
     "resolve_key": "input_sim",
