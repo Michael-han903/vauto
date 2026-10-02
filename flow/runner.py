@@ -766,25 +766,50 @@ class Runner:
         except Exception:
             return []
 
-    def _cursor_box(self, frame):
-        """黄色高亮框（光标所在车格的外框）→ (x, y, w, h)；认不出返回 None。
+    def _cursor_box(self, frame, tiles=None):
+        """光标所在车格的外框 → (x, y, w, h)；认不出返回 None。
 
-        尺寸门槛放宽到 250x200：光标可能停在**只露出一部分的**车格上（列表边缘），
-        严格的门槛会把它判成"认不出光标"，走路就直接失败
-        （2026-10-03 跑挂：grid_walk_fail，同时那一帧 _cursor_cell 返回 None）。
+        【2026-10-03 重写】原来是"全图找最大的黄色轮廓" ✗ —— 实测会抓到别的黄色元素
+        （品牌标签的高亮、左栏价格框…），于是"光标在哪"乱跳：
+        日志 光标中心在 (1140,668) / (1140,1172) / **(856,1676)** 之间蹦，而 856 那里根本
+        不是车格 → 走路一会儿 right 一会儿 down，永远走不到目标。
+        现在**锚定在已检出的车格上**：对每个车格采样它白底外圈那 5 像素，看是不是"光标黄"
+        （HSV 25~45 / S>150 / V>150），一圈最像的那个就是光标所在格。
+        车格本身是可靠检出的（白底矩形），所以这个锚点稳。
         """
+        if frame is None or getattr(frame, "ndim", 0) < 3:
+            return None
         try:
+            if tiles is None:
+                tiles = self._grid_tiles(frame)
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, (25, 150, 150), (45, 255, 255))
-            mask[:max(0, int(self.cfg.grid_origin[1]) - 10), :] = 0
-            mask[:, int(frame.shape[1] * 0.94):] = 0
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not cnts:
+            H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+            yellow = ((H >= 25) & (H <= 45) & (S > 150) & (V > 150)).astype(np.uint8)
+            fh, fw = frame.shape[0], frame.shape[1]
+            best = None
+            # 【参数是量出来的，2026-10-03】黄框在白底车格框**外 12~20 像素**处：
+            #   pad= 5 → 全部 0.00（紧贴那圈没有黄）；pad=12 → 光标格 0.34 / 其他 0.00；
+            #   pad=20 → 光标格 0.40 / 其他 0.00  ← 分离干净，所以取 pad=20、阈值 0.20
+            pad, thr = 20, 0.20
+            for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                hit, tot = 0, 0
+                for (sy, sx, ey, ex) in ((by - pad, bx, by, bx + bw),
+                                         (by + bh, bx, by + bh + pad, bx + bw),
+                                         (by, bx - pad, by + bh, bx),
+                                         (by, bx + bw, by + bh, bx + bw + pad)):
+                    sy, sx = max(0, sy), max(0, sx)
+                    ey, ex = min(fh, ey), min(fw, ex)
+                    if ey <= sy or ex <= sx:
+                        continue
+                    sub = yellow[sy:ey, sx:ex]
+                    hit += int(sub.sum())
+                    tot += int(sub.size)
+                frac = hit / float(tot) if tot else 0.0
+                if best is None or frac > best[0]:
+                    best = (frac, bx, by, bw, bh)
+            if best is None or best[0] < thr:      # 没有任何一格被黄框包着
                 return None
-            x, y, w, h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
-            if w < 250 or h < 200:
-                return None
-            return (int(x), int(y), int(w), int(h))
+            return (int(best[1]), int(best[2]), int(best[3]), int(best[4]))
         except Exception:
             return None
 
@@ -825,7 +850,7 @@ class Runner:
                 if fp is not None and self._fp_diff(fp, target_fp) < self.cfg.fp_same_tol:
                     tbox = (bx, by, bw, bh)
                     break
-            cbox = self._cursor_box(frame)
+            cbox = self._cursor_box(frame, tiles)
             if cbox is None:
                 self.log.event("grid_walk_fail", why="cursor_unknown")
                 return False
@@ -859,11 +884,16 @@ class Runner:
             if not same_row:
                 keys.append("down" if ty > cy else "up")
             keys += [k for k in self.cfg.grid_walk_keys if k not in keys]
+            self.log.event("grid_walk_step", same_col=bool(same_col), same_row=bool(same_row),
+                           keys=keys[:2], cursor=list(cbox), target=list(tbox))
             progressed = False
             for key in keys[:max(1, tries_each)]:
-                self.press(key, f"走向目标车格（光标中心 {int(cx)},{int(cy)}）")
+                self.press(key, f"走向目标车格（光标中心 {int(cx)},{int(cy)}"
+                                f"{'' if same_col else '，先换列'}）")
                 self.sleep(self.cfg.grid_walk_dwell)
-                c2 = self._cursor_box(self.frame())
+                f2 = self.frame()
+                t2 = self._grid_tiles(f2)
+                c2 = self._cursor_box(f2, t2)
                 if c2 is not None and tuple(c2) != tuple(cbox):
                     progressed = True
                     break
@@ -893,15 +923,17 @@ class Runner:
             # 【2026-10-03 用户实测】"会卡在这个界面的查看车辆里面的选项上" ——
             # 因为**当前车辆**那一格的「选择操作」菜单里**没有「上车」这一项**
             # （用户截图：只剩 添加至收藏 / 查看车辆 / 查看历史记录），于是这一下回车
-            # 点成了「添加至收藏」，菜单还开着，人就卡在菜单上。
-            # 复核判据：真的"上车"会立刻进入加载（「我的车辆」列表标题会消失）；
-            # 没上车则列表还在。
+            # 点成了别的项，菜单还开着/进了别的界面，人就卡在那儿。
+            # 复核判据：真的"上车"会立刻进入加载（车格全部消失）。
+            # **不能**用「我的车辆」标题判：菜单弹出时背景是模糊的，标题匹配不上
+            # （第一次修就是这么漏判的）。
+            _t1 = self._grid_tiles(self.frame())      # 刚点完的回车（上车会立刻进加载）
             self.sleep(2.0)
-            _gar = self._probe_loc("page_title_garage", self.frame())[0]
-            if _gar == _gar and _gar >= self.s.dets["page_title_garage"].threshold:
-                self.log.event("enter_car_not_offered", garage_score=round(_gar, 3),
-                               note="列表还在 → 没上车（菜单首项不是「上车」，很可能是当前车辆）")
-                print(f"  [!] 这台车没有「上车」选项（列表还在，{_gar:.3f}）→ 按 Esc 退出菜单")
+            _t2 = self._grid_tiles(self.frame())
+            if _t1 and _t2:                       # 两次都还能看到车格 → 没进加载
+                self.log.event("enter_car_not_offered", tiles=len(_t2),
+                               note="车格还在 → 没上车（菜单首项不是「上车」，很可能是当前车辆）")
+                print(f"  [!] 这台车没有「上车」选项（车格还在 {len(_t2)} 个）→ 按 Esc 退出菜单")
                 self.press("esc", "退出「选择操作」菜单")
                 self.sleep(0.8)
                 return False
@@ -1076,28 +1108,60 @@ class Runner:
             print(f"  [!] 走不到刚处理的那台车 → 不加收藏 证据 {shot}")
             self.log.event("favorite_no_target", why="walk_fail", shot=shot)
             return False
-        self.press(self.cfg.confirm_key, "打开「选择操作」（准备加收藏）")
-        self.sleep(0.8)
-        self.press(self.cfg.fav_key, "↓ 选「添加至收藏」")
-        self.sleep(0.4)
-        self.press(self.cfg.confirm_key, "确认「添加至收藏」")
-        self.sleep(1.0)
-        # 复核：指纹对应的那一格现在应该有 ♥ 了（收藏成功的硬证据；按指纹找，不受滚动影响）
-        ok = False
+        # 【2026-10-03 用户实测："会卡在这个界面的查看车辆里面的选项上"】
+        # 「选择操作」菜单的**项数会变**：一般 5 项（上车 / 添加至收藏 / 查看车辆 / …），
+        # 而当前车辆那格只有 3 项（添加至收藏 / 查看车辆 / 查看历史记录）——
+        # 那时"↓ 一次"就跑到了「查看车辆」，回车就进了看车界面，卡住。
+        # 所以：先按 ↓×1 试，不做数就 Esc 退出来，再用 ↓×0 试一次（总能有对的）。
+        # 每种组合之后都用"那一格有没有出现 ♥"复核。
+        for attempt, downs in enumerate((1, 0)):
+            self.press(self.cfg.confirm_key,
+                       f"打开「选择操作」（加收藏·第 {attempt + 1} 次：↓×{downs}）")
+            self.sleep(0.9)
+            for _ in range(downs):
+                self.press(self.cfg.fav_key, "↓ 选「添加至收藏」")
+                self.sleep(0.4)
+            self.press(self.cfg.confirm_key, f"确认「添加至收藏」（第 {attempt + 1} 次）")
+            self.sleep(1.1)
+            if self._heart_shown(self._last_car_fp):
+                self.log.event("favorite_done", ok=True, downs=downs)
+                print("  [B] 加入收藏 成功 ✅（已看到 ♥）")
+                return True
+            if attempt == 0:
+                print("  [!] 没看到 ♥ → 多半是 3 项菜单（首项就是「添加至收藏」）→ "
+                      "Esc 退出来，改成不按 ↓ 再试一次")
+                self.press("esc", "退出（可能进了「查看车辆」或菜单还开着）")
+                self.sleep(1.0)
+                self.press("esc", "再退一层")
+                self.sleep(1.0)
+                if not self._ensure_vehicle_tab():
+                    self.log.event("favorite_done", ok=False, why="tab_lost")
+                    return False
+                if not self.click_match("tile_change_car", note="重新进列表（重试加收藏）"):
+                    self.log.event("favorite_done", ok=False, why="list_lost")
+                    return False
+                if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
+                    self.log.event("favorite_done", ok=False, why="list_lost")
+                    return False
+                if not self._walk_to_tile(self._last_car_fp):
+                    self.log.event("favorite_done", ok=False, why="walk_back_failed")
+                    return False
+        self.log.event("favorite_done", ok=False, why="both_offsets_failed")
+        print("  [B] 加入收藏 没成功（两种按键组合都不行）→ 下次还会被当成待处理")
+        return False
+
+    def _heart_shown(self, fp) -> bool:
+        """复核：指纹对应的那一格现在是不是有 ♥（按指纹找，不受滚动影响）。"""
+        if fp is None:
+            return False
         for _ in range(3):
             frame = self.frame()
             for (r, c, bx, by, bw, bh, has, sc) in self._grid_tiles(frame):
-                fp = self._title_crop(frame, bx, by, bw, bh)
-                if fp is not None and self._fp_diff(fp, self._last_car_fp) < self.cfg.fp_same_tol:
-                    ok = bool(has)
-                    break
-            if ok:
-                break
+                f = self._title_crop(frame, bx, by, bw, bh)
+                if f is not None and self._fp_diff(f, fp) < self.cfg.fp_same_tol:
+                    return bool(has)
             self.sleep(0.4)
-        self.log.event("favorite_done", ok=bool(ok))
-        print("  [B] 加入收藏 " + ("成功 ✅（已看到 ♥）" if ok
-                                 else "没确认到 ♥（下次还会被当成待处理）"))
-        return bool(ok)
+        return False
 
     def change_car_legacy(self) -> bool:
         """【已停用，保留作回退】指纹驱动的换车：走一步 → 取指纹 → 弄过就继续走。

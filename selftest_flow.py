@@ -321,7 +321,7 @@ try:
         st = {"cur": cur, "presses": []}
         _r6._grid_tiles = lambda frame, _st=st: [(r, c, *_cell_box(r, c), False, 0.2)
                                                 for r in range(_ROWS) for c in range(_COLS)]
-        _r6._cursor_box = lambda frame, _st=st: _cell_box(*_st["cur"])
+        _r6._cursor_box = lambda frame, tiles=None, _st=st: _cell_box(*_st["cur"])
         _r6._title_crop = lambda frame, x, y, w, h: (
             f"cell_{(y - 424) // (_H + _GAP)}_{(x - 816) // (_W + _GAP)}")
         _r6._fp_diff = lambda a, b: 0.0 if a == b else 100.0
@@ -364,6 +364,29 @@ try:
     ck("左上方的 (0,1) 也能走到", _ok3 and _s3["cur"] == (0, 1), f"cur={_s3['cur']} 按键 {_s3['presses']}")
 except Exception as _e:
     ck("走路模拟自检可运行", False, repr(_e))
+
+print("\n⑫ 光标定位锚定在车格上（不再全图找黄色）—— 用两张实机截图验")
+# 2026-10-03 日志：光标中心在 (1140,668)/(1140,1172)/(856,1676) 之间乱蹦，856 那里根本不是
+# 车格 → 因为旧实现是"全图找最大的黄色轮廓"，抓到了品牌标签高亮/左栏价格框那些黄东西。
+try:
+    for _p7, _nm7 in ((_IMG, "ABARTH 那屏"), (_IMG3, "当前车辆 DMC-12 那屏")):
+        if not _os.path.isfile(_p7):
+            continue
+        _im7 = _cv2.imread(_p7)
+        _cfg7 = RunConfig()
+        _cfg7.log_dir = tempfile.mkdtemp(prefix="vauto_selftest7_")
+        _r7 = Runner(build_offline_stack(), _cfg7)
+        _ts7 = _r7._grid_tiles(_im7)
+        _cb7 = _r7._cursor_box(_im7, _ts7)
+        _t007 = [t for t in _ts7 if (t[0], t[1]) == (0, 0)]
+        if _t007 and _cb7:
+            _d7 = abs(_cb7[0] - _t007[0][2]) + abs(_cb7[1] - _t007[0][3])
+            ck(f"光标框≈(0,0) 那格的车格框（{_nm7}）", _d7 < 30,
+               f"差 {_d7}px  cursor={_cb7} 车格={( _t007[0][2], _t007[0][3])}")
+        else:
+            ck(f"能认出光标框（{_nm7}）", False, f"cursor={_cb7} tiles={len(_ts7)}")
+except Exception as _e:
+    ck("光标锚定自检可运行", False, repr(_e))
 
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)
