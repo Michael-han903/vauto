@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T21:42:09",
+  "generated_at": "2026-10-02T22:05:23",
   "scale": 1.0,
   "coarse_scale": 0.5,
   "matcher": {
@@ -7,9 +7,9 @@
     "method": "TM_CCOEFF_NORMED"
   },
   "frames_dir": "golden_frames",
-  "elapsed_seconds": 20.32,
+  "elapsed_seconds": 30.63,
   "last_run": [
-    "card_200sp"
+    "popup_rate_event"
   ],
   "templates": {
     "car_current_garage": {
@@ -907,6 +907,49 @@
         "median": 0.0448998399078846,
         "p95": 0.20184533298015594,
         "max": 0.3917364776134491
+      },
+      "detect_rate": 1.0,
+      "false_positive_rate": 0.0,
+      "verdict": "分离良好",
+      "usable": true
+    },
+    "popup_rate_event": {
+      "name": "popup_rate_event",
+      "file": "templates/popup_rate_event.png",
+      "size": [
+        1390,
+        830
+      ],
+      "scale": 1.0,
+      "threshold": 0.738,
+      "release_threshold": 0.678,
+      "roi": [
+        1217,
+        757,
+        1414,
+        854
+      ],
+      "search": "roi",
+      "match_ms": 45.44,
+      "confirm_frames": 2,
+      "pos_scenes": [
+        "event_entry"
+      ],
+      "pos": {
+        "n": 1,
+        "min": 0.9999997019767761,
+        "p05": 0.9999997019767761,
+        "median": 0.9999997019767761,
+        "p95": 0.9999997019767761,
+        "max": 0.9999997019767761
+      },
+      "neg": {
+        "n": 239,
+        "min": -0.2075459361076355,
+        "p05": -0.12077738419175148,
+        "median": 0.07168072462081909,
+        "p95": 0.15707017481327054,
+        "max": 0.4766545593738556
       },
       "detect_rate": 1.0,
       "false_positive_rate": 0.0,

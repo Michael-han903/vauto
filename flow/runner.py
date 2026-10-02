@@ -52,6 +52,7 @@ __all__ = ["Stack", "Runner", "build_stack", "build_offline_stack"]
 DETECTORS = (
     "hint_esc_retry", "panel_result",                       # A：结算
     "hint_unlock_all", "popup_no_resource", "popup_confirm",  # B：解锁 / 点数不足
+    "popup_rate_event",                                     # 离开赛事后的「为挑战评分?」弹窗
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
@@ -429,6 +430,10 @@ class Runner:
             ok = self._wait_gone("hint_esc_retry", self.cfg.ack_timeout)
             self.log.event("retry_ack", ok=ok)
             print(f"  [A] 已离开结算界面: {ok}")
+        else:
+            # 离开赛事后会弹「为挑战评分?」（默认「取消」，按一次回车就过）——见 docs 第 6.2 节
+            self.sleep(2.0)
+            self._dismiss_dialog_if_frozen("离开赛事后")
         return "settled"
 
     # ---------------- B 阶段 ---------------- #
@@ -700,6 +705,35 @@ class Runner:
             print("  [!] 看不到菜单，无法判断当前车辆；请在主菜单或车库页跑这条校验")
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
+
+    def _dismiss_dialog_if_frozen(self, note: str = "离开赛事后") -> bool:
+        """兜底：如果画面**静止**在一个不是菜单的界面上，就按一次回车把它过掉。
+
+        为什么需要它（2026-10-02 用户实测）：跑完几轮挑战、按 Enter 返回时，会弹一个
+        「为挑战评分?」对话框，**默认选中的是「取消」**，按一次回车就过（不会误点赞）。
+        这个弹窗的高亮行会跟着鼠标悬停跑，靠模板匹配不一定稳，所以这里用与模板无关的
+        判据：**画面静止 = 有东西在等输入**。只在"离开赛事之后"这一个点调用，避免误按。
+        """
+        if self.cfg.replay:
+            return False
+        frame = self.frame()
+        self.sleep(1.2)
+        frame2 = self.frame()
+        moving = (block_max_abs_diff(frame, frame2, blocks=self.cfg.nav_change_blocks)
+                  >= self.cfg.nav_change_threshold)
+        if moving:
+            self.log.event("dismiss_skip", note=note, reason="画面在动")
+            return False
+        hit = None
+        if "popup_rate_event" in self.s.dets:
+            hit = self.observe("popup_rate_event", frame2)
+        shot = self._save_evidence(frame2, "dismiss_dialog")
+        print(f"  [兜底] {note}：画面静止（评分弹窗判据{'命中' if hit else '未命中'}）"
+              f"→ 按一次回车（默认项是「取消」，不会误点赞）  证据: {shot}")
+        self.log.event("dismiss_dialog", note=note, rate_judge=bool(hit), shot=shot)
+        self.press(self.cfg.confirm_key, "关掉「为挑战评分?」等弹窗")
+        self.sleep(1.0)
+        return True
 
     # ---------------- 进赛事（自动开局）---------------- #
     def _enter_fail(self, step: str) -> bool:

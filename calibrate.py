@@ -103,6 +103,8 @@ TEMPLATE_POSITIVE = {
     # 其余 4 张（eventLab 磁贴 / EventLab 黑条 / 代码已填 / 结果卡片）实测被判"余量不足"——
     # 共性坑：**0.5 粗搜尺度下"黑条+白字/纯色块"会退化成"黑块+白影"，跟别的黑条撞车**
     # （负样本能到 0.99）。所以进赛事改成"每一步用画面变化当闸门 + 这一步用真判据复核"。
+    # 离开赛事后的「为挑战评分?」弹窗（默认选中「取消」，按一次回车就过）
+    "popup_rate_event":      ["event_entry/entry_10_rate_dialog.png"],
     "panel_search_title":    ["event_entry/entry_05.png", "event_entry/entry_06.png"],
     "car_current_menu":   ["current_car_22b_menu/*",
                            "menu_vehicle_tab/menu_vehicle_tab_*",     # 用户截图（车辆 tab）
