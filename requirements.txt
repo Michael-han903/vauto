@@ -1,0 +1,24 @@
+# vauto —— 通用 GUI 视觉自动化工具层（仅算法学习原型）
+# 安装： pip install -r requirements.txt
+# Python： 建议 3.10 ~ 3.12（64 位）
+
+# 屏幕捕获（窗口/显示器抓帧，跨平台，纯用户态 BitBlt）
+mss>=9.0.1
+
+# 图像数组与数值计算
+numpy>=1.24
+
+# 模板匹配 / 图像预处理 / 调试图（默认装 CPU 版；有 CUDA 可换 opencv-contrib-python）
+opencv-python>=4.8.0
+
+# Windows 窗口 API：窗口句柄、客户区矩形、前台窗口、PrintWindow
+# 注意：安装后若报 "DLL load failed"，以管理员运行
+#       python Scripts/pywin32_postinstall.py -install
+pywin32>=306
+
+# 鼠标/键盘仿真 + 全局热键监听（Windows 下走 SetCursorPos/SendInput + 低级键盘钩子）
+pynput>=1.7.6
+
+# --- 可选 ---
+# 打包成单文件 exe（可选）
+# pyinstaller>=6.0

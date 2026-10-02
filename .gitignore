@@ -1,0 +1,9 @@
+# 素材：1 GB 的 4K 原始帧，不进 git（要备份请另行存档）
+golden_frames/
+debug_frames/
+
+# 临时产物 / 运行输出
+calib_out.txt
+__pycache__/
+*.pyc
+*.zip
