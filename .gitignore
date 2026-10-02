@@ -7,3 +7,6 @@ calib_out.txt
 __pycache__/
 *.pyc
 *.zip
+
+# 临时探针脚本/中间产物（约定：以 _ 开头）
+_*

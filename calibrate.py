@@ -62,9 +62,10 @@ TEMPLATE_POSITIVE = {
     "hud_marker":         ["challenge_hud/*"],
     "popup_no_resource":  ["popup_no_resource/*"],
     "popup_confirm":      ["popup_no_resource/*"],
-    "list_entry":         ["garage_list/*"],
-    "page_title_garage":  ["garage_list/*"],
-    "hint_esc_back":      MASTERY_SCENES + ["garage_list/*"],
+    "list_entry":         ["garage_list/*", "current_car_22b_garage/*"],
+    "page_title_garage":  ["garage_list/*", "current_car_22b_garage/*"],
+    "hint_esc_back":      MASTERY_SCENES + ["garage_list/*", "current_car_22b_menu/*",
+                                            "current_car_22b_garage/*"],
     "page_title_mastery": MASTERY_SCENES,
     "node_grid_anchor":   MASTERY_SCENES,
     "node_inactive":      MASTERY_SCENES,
@@ -75,15 +76,21 @@ TEMPLATE_POSITIVE = {
                            "car_mastery_page/屏幕截图*180353*",
                            "car_mastery_page/屏幕截图*180412*",
                            "node_inactive/*"],
+    # 当前车辆识别（用于"跑 A 之前必须确认当前车是 1998 斯巴鲁 Impreza 22B-STI"）
+    # 注意：正样本是"该元素在画面里可见"的帧，不是"当前车是 22B"的帧 —— 这两者不等价。
+    "car_current_menu":   ["current_car_22b_menu/*"],
+    "car_current_garage": ["current_car_22b_garage/*", "current_car_22b_strip/*",
+                           "garage_list/*"],
 }
 
 # 自检脚本用的素材，不是业务模板，默认跳过
 SKIP_BY_DEFAULT = {"example_patch", "selftest_patch", "selftest_patch_half",
-                   "selftest_alpha", "自检_中文路径"}
+                   "selftest_alpha", "selftest_debug", "自检_中文路径"}
 
 ROI_MARGIN = 12.0            # 自动 ROI 的外扩像素（全分辨率）
 MIN_FRAMES = 3               # 正/负样本各至少这么多帧才给结论
 MIN_POSITIVE_SCORE = 0.60    # 正样本 p05 下限：低于它说明模板在该出现的地方都匹配不上
+MIN_MARGIN = 0.05            # 正样本最低分与负样本最高分之间至少要拉开这么多
 MIN_DETECT_RATE = 0.90       # 阈值处正样本检出率下限
 MAX_FALSE_POSITIVE = 0.10    # 阈值处负样本误报率上限
 
@@ -222,10 +229,12 @@ def decide(pos: dict, neg: dict, pos_scores: list[float], neg_scores: list[float
     """
     给出 (建议阈值, 判定, 是否可用)。
 
-    三道闸门，缺一不可（旧版只做了第一道，于是把 hud_marker 判成"基本可用"）：
+    四道闸门，缺一不可（旧版只做了第一道，于是把 hud_marker 判成"基本可用"）：
       1. 正样本 p05 要够高（>= MIN_POSITIVE_SCORE）—— 模板在该出现的地方必须真的匹配上；
       2. 正负样本分数区间要分得开（完全分离 / 分位数分离），否则直接不可用；
-      3. 在选定阈值上实测：检出率 >= 0.90 且误报率 <= 0.10。
+      3. 正样本最低分与负样本最高分之间要有 MIN_MARGIN 的余量 —— 余量过小通常说明
+         正负样本分组分错了（某个负样本画面里本来就该有这个元素），或该元素在别处也会出现；
+      4. 在选定阈值上实测：检出率 >= 0.90 且误报率 <= 0.10。
     """
     if pos["n"] < MIN_FRAMES or neg["n"] < MIN_FRAMES:
         return None, f"样本不足（正/负各需 >= {MIN_FRAMES} 帧）", False
@@ -236,11 +245,17 @@ def decide(pos: dict, neg: dict, pos_scores: list[float], neg_scores: list[float
 
     if neg["max"] < pos["min"]:
         thr, verdict = (neg["max"] + pos["min"]) / 2.0, "分离良好"
+        margin = pos["min"] - neg["max"]
     elif neg["p95"] < pos["p05"]:
         thr, verdict = (neg["p95"] + pos["p05"]) / 2.0, "基本可用（分位数法，余量偏小）"
+        margin = pos["p05"] - neg["p95"]
     else:
         return None, ("不可用（正负分数区间重叠：无论阈值取哪都会误判或漏判，"
                       "需重裁更独特/更小的模板、换判据、或换 ROI）"), False
+
+    if margin < MIN_MARGIN:
+        return None, (f"不可用（余量仅 {margin:+.3f} < {MIN_MARGIN}：负样本里出现了几乎相同的画面，"
+                      f"多半是正负分组分错了，或该元素在别的页面也会出现）"), False
 
     thr = round(thr, 3)
     detect = rate_at(pos_scores, thr, True) or 0.0
@@ -280,8 +295,8 @@ def calibrate_one(tpl: Path, index: dict[str, list[Path]], coarse: FrameCache, f
     pos_all = positive_frames(name, index)
     pos_files = sample_per_scene(pos_all, pos_limit)
     pos_set = set(pos_all)
-    neg_files = sample_per_scene([p for files in index.values() for p in files if p not in pos_set],
-                                 neg_limit)
+    neg_all = [p for files in index.values() for p in files if p not in pos_set]
+    neg_files = sample_per_scene(neg_all, neg_limit)
 
     frame_size = (3840, 2160)
     for files in index.values():
@@ -296,6 +311,11 @@ def calibrate_one(tpl: Path, index: dict[str, list[Path]], coarse: FrameCache, f
     coarse_frames = sample_per_scene(pos_files, max(2, pos_limit // 2))
     _, centers, _ = score_frames(matcher, raw, coarse_frames, coarse)
     roi = derive_roi(centers, (raw.shape[1], raw.shape[0]), frame_size)
+
+    # ROI 已知时用【全部】负样本帧：ROI 内匹配只要 10 ms 量级，
+    # 没必要抽样 —— 抽样会漏掉偶尔拿到高分的负样本，导致阈值定得过低。
+    if roi is not None and neg_limit > 0:
+        neg_files = neg_all
 
     # --- 第 2 段：ROI 内（或全帧）全分辨率精确评分 ---
     use_region = None if (full_frame or roi is None) else roi
