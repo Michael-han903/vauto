@@ -98,7 +98,7 @@ class Launcher:
         row = tk.Frame(frm); row.pack(fill="x", pady=3)
         tk.Label(row, text="阶段", width=10, anchor="w").pack(side="left")
         self.var_phase = tk.StringVar(value="both")
-        for val, txt in (("both", "全自动（先花→不够→去刷→回来接着花）"),
+        for val, txt in (("both", "全自动（花↔刷 循环往复）"),
                          ("spend", "只刷 B（车库加点）"),
                          ("farm", "只跑 A（挑战刷点）")):
             tk.Radiobutton(row, text=txt, variable=self.var_phase, value=val).pack(side="left", padx=4)
@@ -111,9 +111,9 @@ class Launcher:
         tk.Label(row, text="   最多处理车数（0 = 一直解到点数不足）", anchor="w").pack(side="left")
         self.var_cars = tk.StringVar(value="0")
         tk.Spinbox(row, from_=0, to=9999, width=6, textvariable=self.var_cars).pack(side="left")
-        tk.Label(row, text="   循环次数", anchor="w").pack(side="left")
-        self.var_cycles = tk.StringVar(value="2")
-        tk.Spinbox(row, from_=1, to=9, width=4, textvariable=self.var_cycles).pack(side="left")
+        tk.Label(row, text="   循环次数(0=一直循环)", anchor="w").pack(side="left")
+        self.var_cycles = tk.StringVar(value="0")
+        tk.Spinbox(row, from_=0, to=99, width=4, textvariable=self.var_cycles).pack(side="left")
 
         # 挑战设置（共享代码 / 标称时长）
         row = tk.Frame(frm); row.pack(fill="x", pady=3)

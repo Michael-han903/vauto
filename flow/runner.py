@@ -1383,12 +1383,14 @@ class Runner:
                 # 为什么不能只看 ♥：**未收藏**的当前车两处 ♥ 都是空的（实测 0.27/0.78）→
                 # 会被当成待处理车 → 进它的「选择操作」（那台车没有「上车」项）→
                 # 回车变成"添加收藏/取消收藏"来回切（用户实测见过）。
-                if self._is_current_car(frame, t):
-                    skipped += 1
-                    self.log.event("grid_skip_current_car", cell=[t[0], t[1]],
-                                   heart_score=round(t[7], 3), why="驾驶中图标")
-                    print(f"  [找] 第 {attempt} 屏：跳过 ({t[0]},{t[1]}) = 当前车（驾驶中图标）")
-                    continue
+                # 【2026-10-03 修·用户实测"还会漏掉未收藏车辆"】
+                # 这里**不再无条件跳过当前车** ✗ —— 原来是"当前车一律不当候选"（怕进它菜单
+                # 变成加/取消收藏来回切），但后来两处已修好（① favorite 的 ↓ 次数改由驾驶图标
+                # 定 ② 未收藏当前车能靠左侧位判出），把当前车排除出候选就纯属漏车了：
+                # 未收藏的当前车照样该解锁+加收藏。
+                # 现在的做法：当前车**保留为候选**，到"上车"那一步再识别 —— 它就是当前车，
+                # 不需要也**不能**走「上车」菜单（它会弹"查看车辆"那种窗 ✗），直通精通页即可。
+                _is_cur_tile = self._is_current_car(frame, t)
                 fp = self._title_crop(frame, t[2], t[3], t[4], t[5])
                 if self._fp_seen(fp):
                     skipped += 1                # 没♥但指纹说这次已经弄过 → 跳过（省掉 70 秒）
@@ -1396,6 +1398,9 @@ class Runner:
                 if self._fp_matches(fp, self._unreachable):
                     skipped += 1                # 之前走过但走不到的车，别再选它
                     continue
+                if _is_cur_tile:
+                    self.log.event("grid_candidate_current_car", cell=[t[0], t[1]],
+                                   heart_score=round(t[7], 3))
                 todo.append((t, fp))
             todo = self._order_candidates(todo)
             hearts = [t[7] for t in tiles if t[7] == t[7]]
@@ -1430,8 +1435,18 @@ class Runner:
                     self.log.event("grid_target_unreachable", row=r, col=c)
                     continue
                 self._last_car_fp = fp
-                print("  [换] 走到目标车 → 上车")
-                if not self._enter_car_now():
+                # 【2026-10-03 修·漏车第二处】走到的这台如果**本来就是当前驾驶的车** →
+                # 不要走「上车」菜单：那台车的菜单**没有「上车」项**（第 1 项是加入收藏、
+                # 第 2 项是查看车辆←回车会弹"回到嘉年华"✗）。旧代码在这里把它记进
+                # "走不到"名单 → 本轮**永久漏掉这一台** ✗（用户实测"还会漏掉未收藏车辆"）。
+                # 它就是当前车 → 直接跳过上车（不碰它的菜单），交给后面的精通页流程。
+                self._target_is_cur = self._is_current_car(
+                    self.frame(), (r, c, bx, by, bw, bh, has, sc))
+                if self._target_is_cur:
+                    self.log.event("enter_car_skipped_current", row=r, col=c)
+                    print("  [换] 这台就是当前驾驶的车 → 不用上车，直通精通页")
+                entered = bool(self._target_is_cur) or self._enter_car_now()
+                if not entered:
                     # 这台没有「上车」选项（很可能是当前车辆，或菜单首项漂移）→
                     # 记下来换下一台，**不要整个 B 阶段停掉**
                     if fp is not None:
@@ -1727,16 +1742,24 @@ class Runner:
         if self._wait_for("page_title_mastery", self.cfg.page_timeout) is None:
             return "no_page"
         det = self.s.dets["hint_unlock_all"]
-        hit = self._wait_for("hint_unlock_all", 3.0)
+        # 【2026-10-03 修·用户实测"会把没全部解锁的车漏掉"】"没看到提示" != "已解锁过" ✗：
+        # 页面刚切进来时底部提示可能还没渲染出来（慢加载/淡入）→ 给**两个独立窗口**复核，
+        # 两次都看不到才认 already；哪怕第二次才看到，也继续走解锁流程。
+        # （原来只等 3 秒、看一次就下结论 → 慢一拍的车被当"已解锁"直接跳过 ✗）
+        _hw = float(getattr(self.cfg, "hint_wait", 6.0))
+        hit = self._wait_for("hint_unlock_all", _hw)
+        if hit is None:
+            self.sleep(2.5)                          # 再给页面一口气
+            hit = self._wait_for("hint_unlock_all", _hw)
         if hit is None:
             sc, _m = self._probe_loc("hint_unlock_all", self.frame())
             # 判据 = 底部「[Y] 解锁全部加成」提示在不在：本页没有可解锁项时游戏不显示它。
             # 这条是**间接**证据，所以把分数一起记进日志 —— 事后能核查"是不是误判成 already"。
             self.log.event("mastery_already",
                            hint_score=(round(sc, 3) if sc == sc else None),
-                           threshold=det.threshold)
+                           threshold=det.threshold, wait=_hw)
             print(f"  [B] 没有「[Y] 解锁全部加成」提示"
-                  f"（{sc:.3f}/{det.threshold}）→ 本页已解锁过，跳过")
+                  f"（{sc:.3f}/{det.threshold}，等了两窗）→ 本页已解锁过，跳过")
             return "already"
         self.press(self.cfg.unlock_key, "解锁全部")
         self.press(self.cfg.confirm_key, "确认「解锁额外加成」")
@@ -2246,14 +2269,24 @@ class Runner:
             # 用户原话："以后启动程序时先看一看技能点够不够点满一辆车，不够的话再去斯巴鲁22b"。
             # 所以启动**先跑 B**（一路解锁到「技能点不足」为止，这本身就是"点够不够点满车"的检查）；
             # 只有真的撞到不足，才切回 22B → 进赛事 → 跑 N 轮挑战 → 回来接着花。
-            cyc_total = max(1, int(cfg.cycles))
-            for cyc in range(1, cyc_total + 1):
-                self.status["cycle"] = f"{cyc}/{cyc_total}"
+            # 【2026-10-03 用户口径】"全自动应该……循环往复才对"：cycles<=0 = 一直循环；
+            # farm_first=True = 开局先去刷（刷完 N 轮再回车库花）；默认先花后刷。
+            cyc_total = int(cfg.cycles)
+            infinite = cyc_total <= 0
+            cyc = 0
+            while infinite or cyc < cyc_total:
+                cyc += 1
+                self.status["cycle"] = ("∞" if infinite else f"{cyc}/{cyc_total}")
                 if cyc > 1:
-                    print(f"\n########## 循环 {cyc}/{cyc_total}（刚刷完挑战，回来接着花）##########")
+                    _ct = "∞" if infinite else str(cyc_total)
+                    print("\n########## 循环 " + str(cyc) + "/" + _ct
+                          + "（刚刷完挑战，回来接着花）##########")
                 # ① 先花：B 一直解锁到「技能点不足」（这就是"点够不够点满车"的检查）
                 spent_before = self.stats.get("unlock_presses", 0)
-                did_b = bool(cfg.b_enabled and cfg.phase != "farm")
+                _skip_b = bool(getattr(cfg, "farm_first", False) and cyc == 1)
+                if _skip_b:
+                    print("  [A] 先刷后花：开局直接去刷挑战（刷完再回车库花）")
+                did_b = bool(cfg.b_enabled and cfg.phase != "farm" and not _skip_b)
                 if did_b:
                     self.phase_spend(cfg.cars)
                     need_points = bool(getattr(self, "_need_points", False))
@@ -2266,7 +2299,7 @@ class Runner:
                 if did_b and not need_points:
                     # 没撞到"点数不足"= 每台车都点得满 / 没车可点 → 不必去刷挑战，收工
                     print(f"  [=] 这轮没遇到「技能点不足」（本轮解锁 {spent_now} 次）"
-                          f"→ 不用去刷挑战，收工")
+                          f"→ 车库没车可花了，收工")
                     break
                 # ② 花不动了 → 切回 22B 去刷挑战（幂等：在 22B 就跳过）
                 print("  [A] 技能点不够了 → 切回斯巴鲁 22B 去跑挑战…")

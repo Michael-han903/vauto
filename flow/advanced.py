@@ -27,6 +27,7 @@ CN = {
     "round_timeout": "单轮超时(秒)", "round_settle_before": "载入稳定等待(秒)",
     "round_active_wait": "等比赛开始上限(秒)", "poll": "轮询间隔(秒)",
     "max_polls_per_round": "单轮轮询上限(0=自动)", "ack_timeout": "Esc 确认超时(秒)",
+    "hint_wait": "精通页提示等待(秒)",
     "watchdog_idle": "卡死看门狗(秒,0=关)",
     "car_find_tries": "找 22B 扫描列上限", "car_scan_report": "扫描进度每 N 列报一次",
     "list_search_roi": "车辆列表区域(x,y,w,h)", "brand_next_click": "品牌翻页箭头坐标",
@@ -54,6 +55,7 @@ CN = {
     "nav_change_threshold": "变化检测阈值",
     "ledger_path": "账本路径", "log_dir": "日志目录",
     "max_runtime_min": "总时长上限(分钟,0=不限)", "require_car_22b": "A 前校验当前车=22B",
+    "cycles": "主循环次数(0=一直循环)", "farm_first": "开局先刷后花",
 }
 
 
