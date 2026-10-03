@@ -2088,6 +2088,35 @@ class Runner:
                 print("  [i] 当前不是 22B → A 阶段开始前会自动切回 22B")
                 self.log.event("car_check_deferred", note="A 前自动切回 22B")
 
+            # 【2026-10-03 用户实测事故】开跑前先验货：抓到的画面必须是标定分辨率。
+            # 那天游戏重启，标题相同的**小窗口**（1279x718）被当成游戏抓进来 → 所有判据 nan
+            # → 程序在"看不见屏幕"的情况下盲按了 10 次 Esc ✗。这里宁可停下也不盲按。
+            try:
+                _f0 = self.frame()
+                _want_w, _want_h = getattr(self.cfg, "frame_expect", (3840, 2160))
+                _got_w = _f0.shape[1] if _f0 is not None else 0
+                _got_h = _f0.shape[0] if _f0 is not None else 0
+                _dark = (_f0 is None) or float(_f0.std()) < 3.0 or int(_f0.max()) < 10
+                if (_got_w, _got_h) != (_want_w, _want_h) or _dark:
+                    _shot = None
+                    try:
+                        _shot = self._save_evidence(self.frame(guard=False), "frame_sanity")
+                    except Exception:
+                        pass
+                    print(f"  [!] 画面验货没过：抓到 {_got_w}x{_got_h}（标定 {_want_w}x{_want_h}）"
+                          f"{'，且画面过暗/过平' if _dark else ''}")
+                    print("      → 判据全部按标定分辨率标定，尺寸不对时任何匹配都没有意义。")
+                    print("      → 先跑 `run_vauto.py --list` 找到分辨率 3840x2160 的那个窗口，"
+                          "用 --hwnd 指定；或把游戏窗口恢复成 3840x2160 再跑。")
+                    self.log.event("frame_sanity_fail", got=[_got_w, _got_h],
+                                   want=[_want_w, _want_h], dark=bool(_dark), shot=_shot)
+                    if not self.cfg.dry_run:
+                        return {"stopped": "frame_sanity_fail", **self.stats}
+            except AbortedByUser:
+                raise
+            except Exception as _exc:
+                self.log.event("frame_sanity_error", err=str(_exc)[:160])
+
             # ---- 主循环：[进赛事 → 跑 N 轮] → [B 一直解锁到「技能点不足」] → [换回 22B] ----
             # 用户口径（2026-10-02）："直到弹出提示说技能点不足再回去跑挑战"。
             # --cycles 默认 1（一轮就退），>1 时自动"回 A 刷点 → 再花"，不用手动重跑命令。

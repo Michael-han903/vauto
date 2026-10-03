@@ -58,6 +58,9 @@ class RunConfig:
     grid_origin: Tuple[int, int] = (800, 408)          # 「我的车辆」车格首格左上角（实机量）
     grid_pitch: Tuple[int, int] = (709, 522)           # 车格间距（实机量）—— 用于按格数走过去
     back_to_22b: bool = True            # B 阶段结束后自动把车换回 22B
+    # 【2026-10-03】开跑前的"画面验货"：必须与标定分辨率一致（w, h）——
+    # 抓到别的尺寸（比如游戏重启时的小窗口）说明抓错窗口，判据全部失效 → 拒绝动作。
+    frame_expect: Tuple[int, int] = (3840, 2160)
     cycles: int = 1                     # 主循环次数：A 跑 N 轮 → B 解锁到「技能点不足」→ 换回 22B → 再来
     cars_cap: int = 40                  # --cars 0（解锁到不足）时的安全上限，防止无限换车
     car_load_wait: float = 20.0         # 上车加载等待（实测 13~18s，留余量）
