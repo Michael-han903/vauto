@@ -55,6 +55,7 @@ DETECTORS = (
     "hint_unlock_all", "popup_no_resource", "popup_confirm",  # B：解锁 / 点数不足
     "popup_rate_event",                                     # 离开赛事后的「为挑战评分?」弹窗
     "popup_move_home",                                      # 车库误触的「移动至住所」确认框
+    "drive_badge",                                          # 「驾驶中」小图标（=当前驾驶的车）
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
@@ -936,6 +937,9 @@ class Runner:
             for (r, c, bx, by, bw, bh, has, sc) in tiles:
                 if has:
                     continue
+                if self._is_current_car(frame, (r, c, bx, by, bw, bh, has, sc)):
+                    continue                 # 当前驾驶的车不当目的地（驾驶中图标）
+
                 fp = self._title_crop(frame, bx, by, bw, bh)
                 if self._fp_seen(fp) or self._fp_matches(fp, self._unreachable):
                     continue
@@ -1110,6 +1114,35 @@ class Runner:
         self.log.event("walk_fp_fail", why="budget")
         return False
 
+    def _is_current_car(self, frame, tile) -> bool:
+        """这一格是不是**当前驾驶的车辆** —— 看它有没有「驾驶中」小图标（用户 2026-10-03 指路）。
+
+        为什么不用位置：用户已明确作废"第一列是当前驾驶车辆"这条规则（"把那条规则忘掉"）。
+        为什么不能只看 ♥：**未收藏**的当前车，标准位与左侧位**都**读不到 ♥（实测 0.27/0.78
+        噪声），会被当成待处理车。而这台车身上有**独有**的「驾驶中」图标（黄绿方块+
+        方向盘，正是占掉 ♥ 位置的那个）—— 实测 当前车 1.000 / 普通车 0.716，阈值 0.85。
+        """
+        det = self.s.dets.get("drive_badge")
+        if det is None or self.cfg.replay:
+            return False
+        if frame is None or getattr(frame, "ndim", 0) < 3:
+            return False                 # 模拟/离线场景的空帧：当作"不是当前车"
+        bx, by = tile[2], tile[3]
+        rx, ry, rw, rh = getattr(self.cfg, "drive_badge_roi", (556, 340, 100, 100))
+        roi = frame[by + ry:by + ry + rh, bx + rx:bx + rx + rw]
+        if not roi.size:
+            return False
+        try:
+            hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
+            if hit is None:
+                return False
+            sc = float(getattr(hit, "score", 0.0))
+            if getattr(self.s.matcher, "ascending", False):
+                sc = 1.0 - sc
+            return sc >= float(getattr(det, "threshold", 0.85) or 0.85)
+        except Exception:
+            return False
+
     def _enter_car_now(self) -> bool:
         """对**列表里当前选中格**执行：Enter（选择操作）→ Enter（上车）→ 等加载 → 回车辆页。"""
         self.press(self.cfg.confirm_key, "打开「选择操作」")
@@ -1193,30 +1226,11 @@ class Runner:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
                         poll=min(0.3, self.cfg.poll))
-        # 【2026-10-03 用户纠正】"**只有最开始第一次**进入车辆列表的时候，第一辆才是当前车辆；
-        # 以后的最左侧第一辆就不是了"。所以这里只在**第一次**进列表时，把"光标所在那格"
-        # 记成已处理（那一刻它就是当前车辆）；之后一律靠 指纹 + ♥ 判断，绝不假设位置。
-        # （另外当前车辆那格的「选择操作」菜单里没有「上车」项，见 _enter_car_now 的复核。）
-        # 【2026-10-03 用户口径】"只有最开始第一次进入车辆列表的时候的第一辆才是当前车辆，
-        # 以后的最左侧第一辆就不是了" → 种子**一辈子只种一次**，用一个独立标志记着
-        # （不能再用 `if not self._seen_cars`：点数不足回 A 刷点时会清空这个集合，
-        #   清空后旧写法会把"以后的最左格"又误当成当前车辆）。
-        if not getattr(self, "_seeded_once", False):
-            _f0 = self.frame()
-            _t0 = self._grid_tiles(_f0)
-            _c0 = self._cursor_cell(_f0, _t0)
-            if _c0 is not None:
-                for (_r, _c, _bx, _by, _bw, _bh, _has, _sc) in _t0:
-                    if (_r, _c) == tuple(_c0):
-                        _fp0 = self._title_crop(_f0, _bx, _by, _bw, _bh)
-                        if _fp0 is not None:
-                            self._remember_done(_fp0)
-                            self._seed_once = True
-                            self._seeded_once = True
-                            self.log.event("car_fp_seed", cell=list(_c0),
-                                           note="首次进列表：光标那格=当前车辆，跳过")
-                            print(f"  [找] 首次进列表，光标在 ({_r},{_c}) = 当前车辆 → 记为已处理")
-                        break
+        # 【2026-10-03 规则作废】用户原话："我之前说过第一列是当前驾驶车辆，所以要跳过他，
+        # 现在因为可以在两个位置检测收藏图标了，所以把那条规则忘掉"。
+        # → 原来那段"首次进列表把光标那格记成已处理"的**位置规则**已删除。
+        #   现在判"是不是当前车"改用车格里的「驾驶中」小图标（见 _is_current_car）：
+        #   它比位置稳（列表一滚位置就变），也比 ♥ 稳（**未收藏**的当前车两处 ♥ 都空）。
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
             frame = self.frame()
@@ -1227,15 +1241,8 @@ class Runner:
                 self.log.event("grid_no_tiles", shot=shot)
                 return False
             cur = self._cursor_cell(frame, tiles)
-            # 【2026-10-03 助手实跑抓到的 bug②】"首次进列表时光标那格 = 当前车辆"这条规则，
-            # 原来只靠"指纹种子"落实，结果实测没兜住（日志 car_fp_seed cell=[0,0] 之后
-            # grid_target 仍然是 row=0 col=0）→ 选中当前车辆 → 它的「选择操作」菜单没有
-            # 「上车」→ 连按回车误触了「移动至住所」→ 整轮跑飞。
-            # 所以**同时**加一道几何判据：首次进列表的第一屏，光标所在格一律不当候选。
-            # 用户口径：只有最开始第一次进列表时最左格才是当前车辆（旧机制不动，这是叠加）。
-            skip_seed_cell = None
-            if getattr(self, "_seed_once", False) and cur is not None:
-                skip_seed_cell = tuple(cur)
+            # （原来这里还有一道"首次进列表、光标那格一律跳过"的几何种子 —— 2026-10-03
+            #   用户作废位置规则后一并删除，改由 _is_current_car 看「驾驶中」图标。）
             # 每次进列表都清空"这次走不到"的名单：它只用来**本轮**别重复撞同一台，
             # 绝不能变成永久跳过（车库里同款同名车指纹相同，永久跳过会误杀）。
             self._unreachable = []
@@ -1247,24 +1254,17 @@ class Runner:
             for t in tiles:
                 if t[6]:                        # 有 ♥ → 用户标过"已点满"
                     continue
-                # 【2026-10-03 用户实测提问："为什么要反复对目前驾驶的车辆添加收藏和取消收藏"】
-                # 根因：**当前车**（我们刚上的那台）在列表第一屏固定在 (0,0)，它的右下角
-                # 图标排布与别格不同（轮胎图标占了 ♥ 的位置）→ 标准位置读 0.75~0.87，
-                # 和"普通未收藏车"（~0.21）**在整格搜里也分不开** → 被当成待处理车 →
-                # 进它的「选择操作」（那台车没有「上车」）→ 回车变成 添加/取消收藏 来回切。
-                # 对策：第一屏的 (0,0) 只要 ♥ 读数落在"模糊带"0.5~0.9，就判为当前车、不碰。
-                # （第一屏之后列表已滚动，当前车不在视野，不适用。）
-                if attempt == 1 and (t[0], t[1]) == (0, 0) and 0.5 <= t[7] < 0.90:
+                # 【2026-10-03 用户口径变更】"第一列=当前车"的位置规则**已作废**
+                #（"现在可以在两个位置检测收藏图标了，把那条规则忘掉"）。
+                # 现在只看**图标**：格子里有「驾驶中」小图标 = 当前车 → 不当候选。
+                # 为什么不能只看 ♥：**未收藏**的当前车两处 ♥ 都是空的（实测 0.27/0.78）→
+                # 会被当成待处理车 → 进它的「选择操作」（那台车没有「上车」项）→
+                # 回车变成"添加收藏/取消收藏"来回切（用户实测见过）。
+                if self._is_current_car(frame, t):
                     skipped += 1
-                    self.log.event("grid_skip_current_car", cell=[0, 0],
-                                   heart_score=round(t[7], 3), why="首屏0,0模糊带=当前车")
-                    print(f"  [找] 第 1 屏：跳过 (0,0)（♥ 分 {t[7]:.3f}，模糊带=当前车）")
-                    continue
-                if skip_seed_cell is not None and (t[0], t[1]) == skip_seed_cell:
-                    skipped += 1                # 首次进列表的光标格 = 当前车辆，不碰（bug②）
                     self.log.event("grid_skip_current_car", cell=[t[0], t[1]],
-                                   heart_score=round(t[7], 3))
-                    print(f"  [找] 第 {attempt} 屏：跳过光标那格 ({t[0]},{t[1]}) = 当前车辆")
+                                   heart_score=round(t[7], 3), why="驾驶中图标")
+                    print(f"  [找] 第 {attempt} 屏：跳过 ({t[0]},{t[1]}) = 当前车（驾驶中图标）")
                     continue
                 fp = self._title_crop(frame, t[2], t[3], t[4], t[5])
                 if self._fp_seen(fp):
@@ -1274,7 +1274,6 @@ class Runner:
                     skipped += 1                # 之前走过但走不到的车，别再选它
                     continue
                 todo.append((t, fp))
-            self._seed_once = False            # 几何种子只在第一屏生效（列表一滚位置就变了）
             todo = self._order_candidates(todo)
             hearts = [t[7] for t in tiles if t[7] == t[7]]
             no_heart = sum(1 for t in tiles if not t[6])

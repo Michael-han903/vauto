@@ -109,6 +109,9 @@ class RunConfig:
     # 这里再查一个「左侧位」（x, y, w, h，相对车格角点）：实测 当前车 0.995 /
     # 普通车 0.778~0.804 → 两处取最大值，>= 阈值就算已收藏。
     heart_roi2: Tuple[int, int, int, int] = (540, 370, 70, 60)
+    # 【2026-10-03】「驾驶中」小图标的搜索区（x, y, w, h，相对车格角点）——
+    # 用它判「这格是不是当前驾驶的车」（取代已作废的「第一列=当前车」位置规则）。
+    drive_badge_roi: Tuple[int, int, int, int] = (556, 340, 100, 100)
     grid_walk_max: int = 30             # 走到目标车格最多按几次方向键
     grid_walk_dwell: float = 0.45       # 每次方向键后的等待（够黄框重画）
     grid_walk_keys: Tuple[str, ...] = ("down", "right")   # 试键顺序（闭环验证，不依赖语义假设）
