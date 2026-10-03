@@ -1463,17 +1463,19 @@ class Runner:
         # → 把刚加上的收藏**又取消了**，而且会来回反复。
         # 现在**只做一次**；判不到 ♥ 就如实记 favorite_unverified 收手（宁可这台车
         # 下次再被挑到重做，也绝不来回切换收藏状态）。
-        # 【2026-10-03】按几下 ↓ 取决于目标是不是"当前车"：
-        #   当前车（列表第一屏 (0,0)、♥ 读数落在 0.5~0.9 模糊带）→ 菜单 3 项，
-        #   「添加至收藏」就在**第一项**（用户实测口径：当前车无「上车」项）→ ↓×0；
-        #   普通车（菜单 5 项，首项是「上车」）→ ↓×1 才到「添加至收藏」。
-        # 用 ♥ 读数自动判，不猜。
+        # 【2026-10-03 用户口径（实测菜单项位置）】
+        #   当前驾驶的车：第 1 项 = 加入收藏；第 2 项 = **查看车辆** ✗（点它会弹出
+        #                "回到嘉年华"确认窗 —— 之前日志里抓到的那个弹窗就是它）；
+        #   其它车      ：第 1 项 = 上车；第 2 项 = 加入收藏。
+        # → ↓ 按几次**由身份决定**：是当前驾驶的车 → ↓×0；其它车 → ↓×1。
+        # 判身份用「驾驶中」小图标（drive_badge），不再用 ♥ 分数的模糊带猜 ✗。
         downs_to_use = 1
-        for _t in self._grid_tiles(self.frame()):
-            _f = self._title_crop(self.frame(), _t[2], _t[3], _t[4], _t[5])
-            if _f is not None and self._fp_diff(_f, self._last_car_fp) < self.cfg.fp_same_tol:
-                if 0.5 <= _t[7] < 0.90:
-                    downs_to_use = 0
+        _fr = self.frame()
+        for (_r, _c, _bx, _by, _bw, _bh, _has, _sc) in self._grid_tiles(_fr):
+            if self._is_current_car(_fr, (_r, _c, _bx, _by, _bw, _bh, _has, _sc)):
+                downs_to_use = 0
+                self.log.event("favorite_target_is_current_car", cell=[_r, _c],
+                               downs=0)
                 break
         for attempt, downs in enumerate((downs_to_use,)):
             # 【2026-10-03 用户实测："会把…没加满技能的车辆加入收藏，可能是不小心多输入了一次"
