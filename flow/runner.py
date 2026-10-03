@@ -815,6 +815,12 @@ class Runner:
                 roi = frame[by + y:by + y + h, bx + x:bx + x + w]
                 if det is None or not roi.size:
                     return float("nan")
+                # 【2026-10-03 用户实测抓到的误报】TM_CCOEFF_NORMED 对**纯色区域**（比如
+                # 这块是白底）会给出虚高分数 —— 用户在截图里看到 F9/G40 两格那块明明是空白，
+                # 却读到 0.939/0.966（>0.90）→ 被误判成"已收藏"。♥ 不可能长在纯色上：
+                # 标准差过小一律判无效（返回 nan，交给"两位置取最大"的另一个位置）。
+                if float(roi.std()) < 8.0:
+                    return float("nan")
                 try:
                     hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
                     if hit is None:
@@ -1164,8 +1170,8 @@ class Runner:
         bx, by = tile[2], tile[3]
         rx, ry, rw, rh = getattr(self.cfg, "drive_badge_roi", (556, 340, 100, 100))
         roi = frame[by + ry:by + ry + rh, bx + rx:bx + rx + rw]
-        if not roi.size:
-            return False
+        if not roi.size or float(roi.std()) < 8.0:
+            return False                 # 纯色区域 → 归一化相关会虚高（同 fav_heart 的教训）
         try:
             hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
             if hit is None:
