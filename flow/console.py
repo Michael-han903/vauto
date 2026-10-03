@@ -14,6 +14,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from typing import Optional
 
@@ -63,6 +64,10 @@ class Launcher:
         self.root.geometry("780x640+40+40")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        self._t0 = time.monotonic()      # 【修·真根】轮询要用它算"本次/累计时长" ✗：
+                                         # 之前 Launcher 没定义 _t0 + import time 被误删 →
+                                         # 轮询每次都在这里抛 NameError 被 except 吞掉 →
+                                         # 按钮永不刷新（停下后没法再点开始 ✗✗）。
         self.q: "queue.Queue[str]" = queue.Queue()
         self.running = False
         self.runner = None
