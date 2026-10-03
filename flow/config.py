@@ -88,6 +88,9 @@ class RunConfig:
     cars_cap: int = 1000
     car_load_wait: float = 20.0         # 上车加载等待（实测 13~18s，留余量）
 
+    use_manufacturer_panel: bool = True  # 【2026-10-03 用户要求】找 22B 时优先用
+                                          # 「制造商」面板过滤（智能找车厂、不记坐标）；
+                                          # 认不出面板就自动退回逐列扫描
     enter_event: bool = False                              # 跑 A 之前自动进赛事（--enter-event）
     tab_creativity_click: Tuple[int, int] = (2390, 476)   # 【实测】创意中心标签中心（坐标兜底；正常走 tab_creativity 模板匹配）
     brand_next_click: Tuple[int, int] = (3621, 354)   # 【实测 2026-10-03】品牌栏 ▶ 箭头（本品牌滚到头 → 点它翻下一个品牌）

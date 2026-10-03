@@ -66,6 +66,7 @@ DETECTORS = (
     "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
     "car_tile_22b",                                         # 「我的车辆」里 22B 那一格（换回 22B 用）
     "fav_heart",                                            # 车格右下角的 ♥ = 已加入收藏（B 选车用）
+    "panel_manufacturer", "brand_subaru",                   # 「制造商」面板 +「斯巴鲁」格（找 22B 快路）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -1966,6 +1967,70 @@ class Runner:
                                     if ok else "Esc 回主菜单后复核：当前车**不是 22B**"))
         return bool(ok)
 
+    # ---------- 「制造商」面板快路（2026-10-03 用户要求：智能、不记坐标）----------
+    def _panel_pick_brand(self, brand: str = "斯巴鲁") -> bool:
+        """在「制造商」面板里用方向键把高亮挪到目标车厂，回车选中。
+
+        面板事实（用户 2026-10-03 两张截图实测）：
+          * 四列网格、每格约 696x100 @3840、列距约 704；
+          * 光标 = **黑色高亮格**（可用颜色直接找，不依赖位置 ✗）；
+          * 车厂顺序会随车辆增减变化 → 每帧**实时找「斯巴鲁」模板**，绝不记坐标。
+        """
+        if self.s.dets.get("brand_subaru") is None:
+            return False
+        for _ in range(80):
+            self.s.stop.check()
+            frame = self.frame()
+            sc, m = self._probe_loc("brand_subaru", frame)
+            g = cv2.cvtColor(frame[150:2140, 420:3400], cv2.COLOR_BGR2GRAY)
+            dark = (g < 60).astype("uint8")
+            n, _lab, st, _c = cv2.connectedComponentsWithStats(dark, 8)
+            hb = None
+            for i in range(1, n):
+                x, y, w, h, a = st[i]
+                if 560 <= w <= 780 and 70 <= h <= 150 and a > 30000:
+                    hb = (x + 420, y + 150, w, h)
+                    break
+            if hb is None or m is None:
+                self.press("down", "翻面板找车厂")
+                self.sleep(0.35)
+                continue
+            hx, hy = hb[0] + hb[2] // 2, hb[1] + hb[3] // 2
+            mx, my = m.x + 348, m.y + 50
+            if abs(mx - hx) < 60 and abs(my - hy) < 60:
+                self.press(self.cfg.confirm_key, "选中车厂 " + brand)
+                self.log.event("panel_brand_picked", brand=brand, at=[mx, my])
+                return True
+            if my > hy + 40:
+                key = "down"
+            elif my < hy - 40:
+                key = "up"
+            elif mx > hx + 40:
+                key = "right"
+            else:
+                key = "left"
+            self.press(key, "挪向 " + brand)
+            self.sleep(self.cfg.grid_walk_dwell)
+        self.log.event("panel_brand_not_found", brand=brand)
+        return False
+
+    def _try_manufacturer_panel(self) -> bool:
+        """列表界面按 Backspace 开「制造商」面板 → 选 斯巴鲁 → 等列表过滤刷新。
+        任何一步认不出 → 返回 False（调用方退回原来的逐列扫描，不会更糟）。"""
+        if self._wait_for("panel_manufacturer", 4.0) is None:
+            self.press("backspace", "打开「制造商」面板")
+            self.sleep(0.8)
+            if self._wait_for("panel_manufacturer", 4.0) is None:
+                self.press("esc", "面板没出现 → 关掉")
+                self.sleep(self.cfg.esc_dwell)
+                return False
+        if not self._panel_pick_brand("斯巴鲁"):
+            self.press("esc", "没找到车厂 → 关掉面板")
+            self.sleep(self.cfg.esc_dwell)
+            return False
+        self.sleep(1.2)
+        return True
+
     def set_car_22b(self) -> bool:
         """把当前车换回 1998 斯巴鲁 Impreza 22B-STI —— 跑 A 的前提。
 
@@ -2000,6 +2065,15 @@ class Runner:
             print("  [!] 换车列表没打开")
             self.log.event("set_22b_fail", where="list_not_open")
             return False
+        # 【2026-10-03 用户要求】优先进「制造商」面板一键定位（369 列 ≈ 6 分钟 → 十几秒）。
+        # 面板选完 = 列表只剩该品牌 → 下面原有的逐列扫描 1~2 屏就能找到 22B。
+        # 认不出来就**退回原来的全扫描**（不会更糟）。
+        if getattr(cfg, "use_manufacturer_panel", True) and not cfg.replay:
+            try:
+                if self._try_manufacturer_panel():
+                    print("  [找] 已用「制造商」面板过滤到 斯巴鲁 ✓（省掉几百次翻列）")
+            except Exception as exc:
+                self.log.event("panel_brand_error", err=str(exc)[:120])
         # 【一列一列扫，直到**真的走不动**才认输】
         # 2026-10-02 实测教训：用户车库几千台车、三四百列，而我只给了 12 列预算 →
         # 日志 set_22b_scan ×12 score=null → set_22b_fail where=exhausted，可那时

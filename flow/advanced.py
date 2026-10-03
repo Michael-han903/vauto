@@ -55,6 +55,7 @@ CN = {
     "nav_change_threshold": "变化检测阈值",
     "ledger_path": "账本路径", "log_dir": "日志目录",
     "max_runtime_min": "总时长上限(分钟,0=不限)", "require_car_22b": "A 前校验当前车=22B",
+    "use_manufacturer_panel": "找22B用制造商面板",
     "cycles": "主循环次数(0=一直循环)", "farm_first": "开局先刷后花",
 }
 
