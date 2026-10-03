@@ -568,6 +568,15 @@ class Runner:
                 # 【2026-10-03 用户口径】点满（或本来就满）→ 回车 → ↓(添加至收藏) → 回车。
                 # 他手工漏标的车，这一步会补上 —— 下次就少一台要重看的车。
                 self.favorite_this_car()
+        else:
+            # 【2026-10-03 用户口径 + 防"静默收工"】for 跑满 = 打到安全上限：
+            # 既没撞到「点数不足」、也没绕回列表开头 —— 这是**异常信号**（正常必由两者之一收尾），
+            # 所以醒目打印 + 记日志。否则主循环会把它当"没遇到点数不足 → 收工"，
+            # 看起来像正常完成 ✗（用户实测就被这个 40 卡过）。
+            self.log.event("cars_cap_hit", cap=cap,
+                           note="跑满安全上限仍未撞到点数不足、也未绕回列表开头")
+            print(f"  [!] 已处理 {cap} 台仍未撞到「技能点不足」，也没扫回列表开头 ——")
+            print("      这是防死循环的安全上限（车太多/点太多时不该到这里），把 logs/ 发我看一下。")
         return {"cars_done": self.stats["cars_done"], "phase": "spend"}
 
     def _in_menu_now(self, frame: Optional[np.ndarray] = None) -> Tuple[bool, dict]:
