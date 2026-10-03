@@ -20,14 +20,22 @@
 
 ## 走法 A：网页建空仓库 + 直接 push（网络能访问 github.com 时最省事）
 
+> ⚡ 本机实测（2026-10-03）：**直连 github.com 不通 ✗，但开着 Clash Verge 的代理就通 ✓**
+> （代理口 `127.0.0.1:7897`，mixed 端口）。所以下面命令里加了 `-c http.proxy=…`，
+> Clash 在托盘里开着即可；不通时把这一项去掉再直连试试。
+
 ```bash
 cd C:/Users/lziha/visual_auto_toolkit
 # 1) 网上建一个空仓库（不要勾 README），比如叫 vauto
-# 2) 关联并推
+# 2) 关联并推（带代理）
 git remote add origin https://github.com/<你的用户名>/vauto.git
-git push -u origin master
-# 3) 弹窗登录（Git Credential Manager）或按提示输入用户名 + 上面那个 Token 当密码
+git -c http.proxy=http://127.0.0.1:7897 push -u origin master
+# 3) 弹窗登录（Git Credential Manager）或按提示输入用户名 + Token 当密码
 ```
+
+> 若 push 报 credentials 相关错误，可只对这一次用 token：
+> `git -c http.proxy=http://127.0.0.1:7897 push https://<用户名>:<Token>@github.com/<用户名>/vauto.git master`
+> 用完记得去网页把该 Token 撤销（或换一个新的），避免留在别处。
 
 推完后：仓库页 → Settings → 最下面 「Change visibility」可随时改公开/私有。
 
