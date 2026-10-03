@@ -203,6 +203,14 @@ class Launcher:
             self._say(f"[i] 配置载入跳过: {exc}\n")
             self.base_cfg = RunConfig(); self.overrides = {}
 
+    def _sync_buttons(self) -> None:
+        """按 running 状态刷新两个按钮（单独的 try，坏不了别人）。"""
+        try:
+            self.btn_start.config(state=("disabled" if self.running else "normal"))
+            self.btn_stop.config(state=("normal" if self.running else "disabled"))
+        except Exception:
+            pass
+
     def _open_advanced(self) -> None:
         from flow.advanced import open_advanced
         from flow.config import RunConfig
@@ -244,8 +252,14 @@ class Launcher:
             self.var_title.set(titles[0])
 
     def _start(self) -> None:
-        if self.running:
+        # 【2026-10-03 修】原来 `if self.running: return` 是静默无响应 ✗：
+        # 线程已结束但标志没复位时，按钮看着能点、点了没反应 → 只能退出重进 ✗。
+        # 现在按"工作线程是否真的还活着"判断；死了就强制复位，让你能直接再启动 ✓。
+        if self.running and self.worker is not None and self.worker.is_alive():
+            self._say("[i] 上一轮还在收尾，稍等一下再点；若一直如此按 F1 或关掉窗口重开
+")
             return
+        self.running = False
         title = self.var_title.get().strip()
         if not title:
             self._say("[!] 先选目标窗口（点「刷新」再下拉选 Forza Horizon 6）\n")
@@ -365,6 +379,13 @@ class Launcher:
             self.running = False
             self.done_flag = True
             sys.stdout = real_stdout
+            # 【2026-10-03 修·用户实测"停下后没法再次点开始"】收尾时**直接**把按钮恢复：
+            # 原来只靠 300ms 轮询刷按钮，一旦轮询里某次更新抛异常（被 except 吞掉 ✗）
+            # 或轮询线程死掉，按钮就永久停在"禁用"状态 ✗ → 只能退出重进 ✗。
+            try:
+                self.root.after(0, self._sync_buttons)
+            except Exception:
+                pass
 
     # ---------------- 主线程轮询 ----------------
     def _push_text(self, s: str) -> None:
@@ -398,6 +419,17 @@ class Launcher:
             pass
 
     def _tick_status(self) -> None:
+        try:
+            self._tick_body()
+        except Exception:
+            pass
+        finally:
+            try:
+                self.root.after(300, self._tick_status)
+            except Exception:
+                pass
+
+    def _tick_body(self) -> None:
         st = {"state": "idle"}
         if self.runner is not None:
             st = dict(getattr(self.runner, "status", {}) or {})
@@ -421,12 +453,7 @@ class Launcher:
                 f"时长   本次 {_d(_el)} · 累计 {_d(_tot)}"
             ))
             self.lbl_last.config(text=f"最近动作: {st.get('last', '-')}")
-            self.btn_start.config(state=("disabled" if self.running else "normal"))
-            self.btn_stop.config(state=("normal" if self.running else "disabled"))
-        except Exception:
-            pass
-        try:
-            self.root.after(300, self._tick_status)
+            self._sync_buttons()
         except Exception:
             pass
 
