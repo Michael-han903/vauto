@@ -1,0 +1,358 @@
+# -*- coding: utf-8 -*-
+"""图形控制台（Launcher）：设置 + 启动/停止 + 状态监测 + 日志尾巴。
+
+设计：Tk 在主线程；跑流程的 Runner 在**工作线程**里；
+两个线程只通过 queue.Queue（日志）和普通属性（状态快照）通信，避免跨线程碰 Tk。
+
+日志的来路：把工作线程里的 sys.stdout 包一层 _Tee → 既照常打控制台，
+也塞进 Queue → 主线程每 250ms 取出来填到窗口里（所以窗口里看到的
+就是终端里那套中文日志，而不是原始 JSONL）。
+"""
+from __future__ import annotations
+
+import os
+import queue
+import sys
+import threading
+import traceback
+from typing import Optional
+
+_STATE_STYLE = {
+    "idle":        ("待命", "#888888"),
+    "run":         ("运行中", "#1f9d55"),
+    "wait_screen": ("等待屏幕恢复", "#dd8800"),
+    "stopped":     ("已停止", "#cc3333"),
+    "done":        ("已结束", "#3366cc"),
+}
+
+
+class _Tee:
+    """把 stdout 同时写到真终端和队列（给 GUI 显示）。"""
+
+    def __init__(self, real, push):
+        self._real = real
+        self._push = push
+
+    def write(self, s: str) -> int:
+        try:
+            if self._real is not None:
+                self._real.write(s)
+        except Exception:
+            pass
+        if s:
+            self._push(s)
+        return len(s) if s else 0
+
+    def flush(self) -> None:
+        try:
+            if self._real is not None:
+                self._real.flush()
+        except Exception:
+            pass
+
+    def isatty(self) -> bool:            # 有些库会问
+        return False
+
+
+class Launcher:
+    def __init__(self):
+        import tkinter as tk
+        self.tk = tk
+        self.root = tk.Tk()
+        self.root.title("《地平线6》自动化控制台 —— 车库加点 / 挑战刷点")
+        self.root.geometry("780x640+40+40")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.q: "queue.Queue[str]" = queue.Queue()
+        self.running = False
+        self.runner = None
+        self.stack = None
+        self.worker: Optional[threading.Thread] = None
+        self.done_flag = False
+
+        self._build_ui()
+        self._refresh_windows()
+        self.root.after(250, self._pump)
+        self.root.after(300, self._tick_status)
+
+    # ---------------- UI ----------------
+    def _build_ui(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+        pad = dict(padx=10, pady=4)
+        frm = tk.Frame(self.root)
+        frm.pack(fill="x", **pad)
+
+        # 目标窗口
+        row = tk.Frame(frm); row.pack(fill="x", pady=3)
+        tk.Label(row, text="目标窗口", width=10, anchor="w").pack(side="left")
+        self.var_title = tk.StringVar()
+        self.cmb_title = ttk.Combobox(row, textvariable=self.var_title, width=52)
+        self.cmb_title.pack(side="left", fill="x", expand=True)
+        tk.Button(row, text="刷新", width=6, command=self._refresh_windows).pack(side="left", padx=6)
+
+        # 阶段
+        row = tk.Frame(frm); row.pack(fill="x", pady=3)
+        tk.Label(row, text="阶段", width=10, anchor="w").pack(side="left")
+        self.var_phase = tk.StringVar(value="both")
+        for val, txt in (("both", "全自动（先花→不够→去刷→回来接着花）"),
+                         ("spend", "只刷 B（车库加点）"),
+                         ("farm", "只跑 A（挑战刷点）")):
+            tk.Radiobutton(row, text=txt, variable=self.var_phase, value=val).pack(side="left", padx=4)
+
+        # 数字项
+        row = tk.Frame(frm); row.pack(fill="x", pady=3)
+        tk.Label(row, text="挑战轮数", width=10, anchor="w").pack(side="left")
+        self.var_rounds = tk.StringVar(value="4")
+        tk.Spinbox(row, from_=1, to=99, width=5, textvariable=self.var_rounds).pack(side="left")
+        tk.Label(row, text="   最多处理车数（0 = 一直解到点数不足）", anchor="w").pack(side="left")
+        self.var_cars = tk.StringVar(value="0")
+        tk.Spinbox(row, from_=0, to=9999, width=6, textvariable=self.var_cars).pack(side="left")
+        tk.Label(row, text="   循环次数", anchor="w").pack(side="left")
+        self.var_cycles = tk.StringVar(value="2")
+        tk.Spinbox(row, from_=1, to=9, width=4, textvariable=self.var_cycles).pack(side="left")
+
+        # 开关
+        row = tk.Frame(frm); row.pack(fill="x", pady=3)
+        self.var_event = tk.BooleanVar(value=True)
+        self.var_awake = tk.BooleanVar(value=True)
+        tk.Checkbutton(row, text="自动进赛事（主菜单→创意中心→EventLab→搜索共享代码）",
+                       variable=self.var_event).pack(side="left", padx=2)
+        tk.Checkbutton(row, text="防息屏/防休眠", variable=self.var_awake).pack(side="left", padx=8)
+
+        row = tk.Frame(frm); row.pack(fill="x", pady=6)
+        self.var_live = tk.BooleanVar(value=False)
+        tk.Checkbutton(row, text="★ 真的按键（不勾 = 演练模式，只判不按）",
+                       variable=self.var_live, fg="#cc0000",
+                       font=("Microsoft YaHei UI", 10, "bold")).pack(side="left", padx=2)
+        self.btn_start = tk.Button(row, text="启动", width=10, bg="#1f9d55", fg="white",
+                                   font=("Microsoft YaHei UI", 11, "bold"), command=self._start)
+        self.btn_start.pack(side="right", padx=4)
+        self.btn_stop = tk.Button(row, text="停止", width=10, state="disabled", command=self._stop)
+        self.btn_stop.pack(side="right", padx=4)
+        tk.Button(row, text="打开日志文件夹", width=12,
+                  command=self._open_logs).pack(side="right", padx=4)
+
+        # 状态
+        box = tk.LabelFrame(self.root, text="状态")
+        box.pack(fill="x", **pad)
+        self.lbl_state = tk.Label(box, text="● 待命", font=("Microsoft YaHei UI", 16, "bold"),
+                                  anchor="w", fg="#888888")
+        self.lbl_state.pack(fill="x", padx=8, pady=(4, 0))
+        self.lbl_body = tk.Label(box, text="", anchor="w", justify="left",
+                                 font=("Microsoft YaHei UI", 10))
+        self.lbl_body.pack(fill="x", padx=8)
+        self.lbl_last = tk.Label(box, text="", anchor="w", fg="#666666",
+                                 font=("Microsoft YaHei UI", 10))
+        self.lbl_last.pack(fill="x", padx=8, pady=(0, 6))
+
+        # 日志
+        box2 = tk.LabelFrame(self.root, text="运行日志（和终端同款）")
+        box2.pack(fill="both", expand=True, **pad)
+        from tkinter import scrolledtext
+        self.txt = scrolledtext.ScrolledText(box2, height=14, wrap="none",
+                                             font=("Consolas", 9))
+        self.txt.pack(fill="both", expand=True, padx=6, pady=6)
+        self.txt.configure(state="disabled")
+
+        tk.Label(self.root, text="F1 = 急停（任何时候）· 目标窗口不在前台时动作会自动暂停",
+                 anchor="w", fg="#999999").pack(fill="x", padx=10, pady=(0, 6))
+
+    # ---------------- 交互 ----------------
+    def _open_logs(self) -> None:
+        d = os.path.join(os.getcwd(), "logs")
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.startfile(d)                 # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _refresh_windows(self) -> None:
+        titles = []
+        try:
+            from vauto import enable_dpi_awareness, list_windows
+            enable_dpi_awareness()
+            for _hwnd, t, _cls in list_windows():
+                t = (t or "").strip()
+                if t and t not in titles:
+                    titles.append(t)
+        except Exception as exc:
+            titles = [f"(列举窗口失败: {exc})"]
+        self.cmb_title["values"] = titles
+        cur = self.var_title.get()
+        pick = cur if cur in titles else ""
+        if not pick:
+            pick = next((t for t in titles if "forza" in t.lower() or "地平线" in t), "")
+        if pick:
+            self.var_title.set(pick)
+        elif titles and not cur:
+            self.var_title.set(titles[0])
+
+    def _start(self) -> None:
+        if self.running:
+            return
+        title = self.var_title.get().strip()
+        if not title:
+            self._say("[!] 先选目标窗口（点「刷新」再下拉选 Forza Horizon 6）\n")
+            return
+        try:
+            int(self.var_rounds.get()); int(self.var_cars.get()); int(self.var_cycles.get())
+        except Exception:
+            self._say("[!] 轮数/车数/循环 必须是数字\n")
+            return
+        if self.var_live.get():
+            from tkinter import messagebox
+            ok = messagebox.askyesno(
+                "确认真的按键？",
+                "程序会真的操作你的鼠标键盘。\n\n"
+                "· 运行中随时 F1 急停，或点窗口里的「停止」\n"
+                "· 目标窗口不在前台时全部动作自动暂停\n"
+                "· 第一次建议先不勾「真的按键」演练一遍\n\n"
+                "确定开始？")
+            if not ok:
+                return
+        self.running = True
+        self.done_flag = False
+        self.runner = None
+        self.stack = None
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self._say("=" * 70 + "\n")
+        self.worker = threading.Thread(target=self._worker, daemon=True, name="vauto-flow")
+        self.worker.start()
+
+    def _stop(self) -> None:
+        st = self.stack
+        ev = getattr(getattr(st, "stop", None), "event", None) if st is not None else None
+        if ev is not None:
+            try:
+                ev.set()
+                self._say("\n[停止] 已点「停止」→ 正在中止（等同按 F1）…\n")
+                return
+            except Exception:
+                pass
+        self._say("\n[停止] 请直接按 F1 急停（这个阶段还没拿到停止句柄）\n")
+
+    def _on_close(self) -> None:
+        if self.running:
+            from tkinter import messagebox
+            if not messagebox.askyesno("还在运行", "任务还在跑，确定要关窗口吗？\n（等同于点「停止」）"):
+                return
+            self._stop()
+        # 先把两个流刷干净再 _exit（否则管道/重定向下最后一段输出会丢）
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)                          # 规避 tkinter 收尾杂音（同 run_vauto）
+
+    # ---------------- 工作线程 ----------------
+    def _worker(self) -> None:
+        real_stdout = sys.stdout
+        sys.stdout = _Tee(real_stdout, self._push_text)
+        ka = None
+        try:
+            from vauto import enable_dpi_awareness
+            enable_dpi_awareness()
+            from flow.config import RunConfig
+            from flow.runner import Runner, build_stack
+            if self.var_awake.get():
+                from flow.keepawake import keep_awake
+                ka = keep_awake(True)
+                print("  [准备] 防息屏/防休眠：" + ("已启用 ✓" if ka.active else "未生效 ✗"))
+            cfg = RunConfig()
+            cfg.title_key = self.var_title.get().strip()
+            cfg.phase = self.var_phase.get()
+            cfg.rounds = int(self.var_rounds.get())
+            cfg.cars = int(self.var_cars.get())
+            cfg.cycles = int(self.var_cycles.get())
+            cfg.enter_event = bool(self.var_event.get())
+            cfg.dry_run = not bool(self.var_live.get())
+            print(f"[+] 配置：阶段={cfg.phase} 轮数={cfg.rounds} 车数={cfg.cars} "
+                  f"循环={cfg.cycles} 进赛事={cfg.enter_event} "
+                  f"模式={'真按键' if not cfg.dry_run else '演练'}")
+            stack = build_stack(cfg, title_key=cfg.title_key)
+            self.stack = stack
+            print(f"[+] 目标窗口 hwnd={stack.hwnd}")
+            with stack.stop:
+                runner = Runner(stack, cfg)
+                self.runner = runner
+                runner.run()
+            stack.capture.close()
+            print("\n[+] 流程结束")
+        except Exception as exc:
+            print("\n[崩溃] 未预期异常：")
+            traceback.print_exc(file=sys.stdout)
+            _ = exc
+        finally:
+            if ka is not None:
+                ka.stop()
+            self.running = False
+            self.done_flag = True
+            sys.stdout = real_stdout
+
+    # ---------------- 主线程轮询 ----------------
+    def _push_text(self, s: str) -> None:
+        self.q.put(s)
+
+    def _say(self, s: str) -> None:
+        self.q.put(s)
+
+    def _pump(self) -> None:
+        buf = []
+        try:
+            while True:
+                buf.append(self.q.get_nowait())
+        except queue.Empty:
+            pass
+        if buf:
+            self.txt.configure(state="normal")
+            self.txt.insert("end", "".join(buf))
+            # 只保留最近 ~600 行，免得越跑越卡
+            try:
+                n = int(self.txt.index("end-1c").split(".")[0])
+                if n > 600:
+                    self.txt.delete("1.0", f"{n - 600}.0")
+            except Exception:
+                pass
+            self.txt.see("end")
+            self.txt.configure(state="disabled")
+        try:
+            self.root.after(250, self._pump)
+        except Exception:
+            pass
+
+    def _tick_status(self) -> None:
+        st = {"state": "idle"}
+        if self.runner is not None:
+            st = dict(getattr(self.runner, "status", {}) or {})
+            st["cars_done"] = self.runner.stats.get("cars_done", 0)
+            st["rounds_done"] = self.runner.stats.get("rounds", 0)
+        if self.done_flag:
+            st["state"] = "done"
+        label, color = _STATE_STYLE.get(str(st.get("state")), ("运行中", "#1f9d55"))
+        try:
+            self.lbl_state.config(text=f"● {label}", fg=color)
+            self.lbl_body.config(text=(
+                f"阶段   {st.get('phase', '-')}\n"
+                f"轮次   第 {st.get('round', '-')} 轮    循环 {st.get('cycle', '-')}\n"
+                f"成绩   已解锁 {st.get('cars_done', 0)} 台 · 已跑 {st.get('rounds_done', 0)} 轮"
+            ))
+            self.lbl_last.config(text=f"最近动作: {st.get('last', '-')}")
+            self.btn_start.config(state=("disabled" if self.running else "normal"))
+            self.btn_stop.config(state=("normal" if self.running else "disabled"))
+        except Exception:
+            pass
+        try:
+            self.root.after(300, self._tick_status)
+        except Exception:
+            pass
+
+    # ---------------- 入口 ----------------
+    def run(self) -> None:
+        self.root.mainloop()

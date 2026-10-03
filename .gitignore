@@ -13,3 +13,8 @@ _*
 logs/
 templates/selftest_*.png
 templates/自检_*.png
+
+# PyInstaller 构建产物（不入库；用 build_exe.py 重建）
+dist/
+build/
+*.spec
