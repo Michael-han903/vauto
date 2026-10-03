@@ -226,6 +226,8 @@ class Runner:
         # 【2026-10-03 新增·GUI】状态快照（给状态小窗看；每步更新，显示用途允许轻微竞态）
         self.status: Dict[str, Any] = {
             "state": "init", "phase": "-", "round": "-", "cycle": "-", "last": "",
+            # 「累计运行时长」的历史部分（账本里之前累计的秒数；界面再加本次的）
+            "total_before_sec": float(self.ledger.get("runtime_total_sec", 0.0)),
         }
         self._black_since: Optional[float] = None   # 连续全黑帧起点（防息屏兜底）
 
@@ -243,6 +245,12 @@ class Runner:
         self.ledger["cars_done_total"] += self.stats["cars_done"]
         self.ledger["rounds_total"] += self.stats["rounds"]
         self.ledger["sessions"] += 1
+        # 【2026-10-03 用户要求】总统计"总运行时长"：每次会话结束把本次时长累进账本
+        _run_sec = max(0.0, time.monotonic() - self._t0)
+        self.stats["runtime_sec"] = round(_run_sec, 1)
+        self.ledger["runtime_total_sec"] = round(
+            float(self.ledger.get("runtime_total_sec", 0.0)) + _run_sec, 1)
+        self.ledger["runtime_last_sec"] = round(_run_sec, 1)
         self.ledger["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         p = Path(self.cfg.ledger_path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -2356,5 +2364,16 @@ class Runner:
         print("-" * 78)
         print(f"本次结果: {self.stats}")
         print(f"台账: {self.ledger}  → {self.cfg.ledger_path}")
+
+        def _dur(sec: float) -> str:
+            sec = max(0, int(sec))
+            return f"{sec // 3600}h{sec % 3600 // 60:02d}m{sec % 60:02d}s"
+
+        _run_sec = float(self.stats.get("runtime_sec", time.monotonic() - self._t0))
+        _tot_sec = float(self.ledger.get("runtime_total_sec", 0.0))
+        print(f"[统计] 本次运行 {_dur(_run_sec)} · 累计运行 {_dur(_tot_sec)}"
+              f"（共 {self.ledger.get('sessions', 0)} 次会话 · 累计解锁 "
+              f"{self.ledger.get('cars_done_total', 0)} 台 / 挑战 "
+              f"{self.ledger.get('rounds_total', 0)} 轮）")
         print(f"日志事件统计: {self.log.summary()}")
         return dict(self.stats)

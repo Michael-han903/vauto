@@ -407,10 +407,17 @@ class Launcher:
         label, color = _STATE_STYLE.get(str(st.get("state")), ("运行中", "#1f9d55"))
         try:
             self.lbl_state.config(text=f"● {label}", fg=color)
+            def _d(sec: float) -> str:
+                sec = max(0, int(sec))
+                return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+            _el = time.monotonic() - self._t0
+            _tot = float(st.get("total_before_sec", 0.0)) + _el
             self.lbl_body.config(text=(
                 f"阶段   {st.get('phase', '-')}\n"
                 f"轮次   第 {st.get('round', '-')} 轮    循环 {st.get('cycle', '-')}\n"
-                f"成绩   已解锁 {st.get('cars_done', 0)} 台 · 已跑 {st.get('rounds_done', 0)} 轮"
+                f"成绩   已解锁 {st.get('cars_done', 0)} 台 · 已跑 {st.get('rounds_done', 0)} 轮\n"
+                f"时长   本次 {_d(_el)} · 累计 {_d(_tot)}"
             ))
             self.lbl_last.config(text=f"最近动作: {st.get('last', '-')}")
             self.btn_start.config(state=("disabled" if self.running else "normal"))
