@@ -56,6 +56,10 @@ def parse_args(argv=None):
     p.add_argument("--probe-seconds", type=float, default=0.0,
                    help="探针自动跑多少秒后结束（0=手动 Ctrl+C）")
     p.add_argument("--selftest", action="store_true", help="离线自检：不碰屏幕与键鼠")
+    p.add_argument("--event-code", type=str, default="",
+                   help="挑战共享代码（默认用配置里的 161047605，可用 --save-config 看/改）")
+    p.add_argument("--round-minutes", type=float, default=0.0,
+                   help="挑战标称时长（分钟，默认 8）—— 用来算单轮超时与界面估时")
     p.add_argument("--no-keep-awake", action="store_true",
                    help="关闭「防息屏/防休眠」（默认开：长跑时阻止显示器关闭与系统睡眠）")
     p.add_argument("--no-gui", action="store_true",
@@ -98,6 +102,11 @@ def main(argv=None) -> int:
     cfg.dry_run = not args.live
     cfg.require_car_22b = not args.no_car_check
     cfg.enter_event = bool(args.enter_event)
+    if args.event_code:
+        cfg.share_code = args.event_code.strip()
+    if args.round_minutes and args.round_minutes > 0:
+        cfg.round_minutes = float(args.round_minutes)
+    cfg.__post_init__()                     # 让 round_minutes 立即生效（推导单轮超时）
 
     if args.save_config:
         from flow.config import save_config

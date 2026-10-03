@@ -112,6 +112,18 @@ class Launcher:
         self.var_cycles = tk.StringVar(value="2")
         tk.Spinbox(row, from_=1, to=9, width=4, textvariable=self.var_cycles).pack(side="left")
 
+        # 挑战设置（共享代码 / 标称时长）
+        row = tk.Frame(frm); row.pack(fill="x", pady=3)
+        tk.Label(row, text="挑战设置", width=10, anchor="w").pack(side="left")
+        tk.Label(row, text="共享代码").pack(side="left")
+        self.var_code = tk.StringVar(value="161047605")
+        tk.Entry(row, textvariable=self.var_code, width=14).pack(side="left", padx=(2, 14))
+        tk.Label(row, text="挑战时长(分钟)").pack(side="left")
+        self.var_minutes = tk.StringVar(value="8")
+        tk.Spinbox(row, from_=1, to=120, width=5, textvariable=self.var_minutes).pack(side="left")
+        tk.Label(row, text="（时长只影响超时与估时；比赛实际时长由蓝图决定）",
+                 fg="#999999").pack(side="left", padx=8)
+
         # 开关
         row = tk.Frame(frm); row.pack(fill="x", pady=3)
         self.var_event = tk.BooleanVar(value=True)
@@ -197,8 +209,11 @@ class Launcher:
             return
         try:
             int(self.var_rounds.get()); int(self.var_cars.get()); int(self.var_cycles.get())
+            if not self.var_code.get().strip():
+                raise ValueError("共享代码不能为空")
+            float(self.var_minutes.get())
         except Exception:
-            self._say("[!] 轮数/车数/循环 必须是数字\n")
+            self._say("[!] 轮数/车数/循环 必须是数字；共享代码不能为空、时长填分钟数\n")
             return
         if self.var_live.get():
             from tkinter import messagebox
@@ -272,9 +287,12 @@ class Launcher:
             cfg.cars = int(self.var_cars.get())
             cfg.cycles = int(self.var_cycles.get())
             cfg.enter_event = bool(self.var_event.get())
+            cfg.share_code = self.var_code.get().strip()
+            cfg.round_minutes = float(self.var_minutes.get())
+            cfg.__post_init__()                 # 让时长立即推导单轮超时
             cfg.dry_run = not bool(self.var_live.get())
             print(f"[+] 配置：阶段={cfg.phase} 轮数={cfg.rounds} 车数={cfg.cars} "
-                  f"循环={cfg.cycles} 进赛事={cfg.enter_event} "
+                  f"循环={cfg.cycles} 进赛事={cfg.enter_event} 代码={cfg.share_code} 时长={cfg.round_minutes:g}分 "
                   f"模式={'真按键' if not cfg.dry_run else '演练'}")
             stack = build_stack(cfg, title_key=cfg.title_key)
             self.stack = stack

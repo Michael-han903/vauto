@@ -420,7 +420,11 @@ class Runner:
     # ---------------- A 阶段 ---------------- #
     def phase_farm(self, rounds: int) -> dict:
         print(f"\n===== A 阶段：{rounds} 轮挑战（按住 W → 等结算 → Esc 重试） =====")
-        self.status.update(state="run", phase=f"A 挑战 ×{rounds}")
+        _mins = float(getattr(self.cfg, "round_minutes", 0) or 0)
+        if _mins > 0:
+            print(f"  [A] 标称每轮约 {_mins:.0f} 分钟 · 代码 {self.cfg.share_code}"
+                  f" → 预计总时长约 {_mins * rounds:.0f} 分钟（不含结算/加载波动）")
+        self.status.update(state="run", phase=f"A 挑战 ×{rounds}", eta_min=round(_mins * rounds, 1))
         settled = 0
         while settled < rounds:
             if self.cfg.max_runtime_min and \
@@ -2156,7 +2160,7 @@ class Runner:
         # 4) ↑ 到「共享代码」→ Enter → 输代码（已填就别重输）→ Enter → ↓ → Enter
         self.press("up", "移到「共享代码」行")
         self.press(cfg.confirm_key, "进入代码输入")
-        print("  [进赛事] 输入共享代码（先退格清空，防拼成两遍）")
+        print(f"  [进赛事] 输入共享代码 {cfg.share_code}（先退格清空，防拼成两遍）")
         for _ in range(int(cfg.code_clear_backspaces)):
             self.press("backspace", "清空输入框")
         self._type_text(cfg.share_code, "输入共享代码")

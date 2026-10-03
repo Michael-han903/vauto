@@ -36,7 +36,9 @@ class RunConfig:
     hold_key: str = "w"                 # 【实测】挑战进行中只需一直按住 W
     retry_key: str = "esc"              # 【实测】结算画面 [Esc] 重试
     leave_event_key: str = "enter"      # 【实测】结算画面 [Enter] 继续（离开赛事）
-    round_timeout: float = 840.0        # 【实测】一轮约 542 s，留到 14 分钟
+    round_timeout: float = 840.0        # 单轮超时（秒）。若 round_minutes>0 会由它自动推导
+    round_minutes: float = 8.0          # 【可调】挑战标称时长（分钟）——用来算单轮超时 + 界面估时
+                                        # （实测一轮全程约 542s：8 分钟挑战 + 加载/结算 ≈ 62s）
     round_settle_before: float = 90.0
     round_active_wait: float = 150.0    # 等"画面动起来"=比赛开始（加载画面是静止的，不能只等静止）   # 【实测】Esc 重试后要重新加载（用户口述约 1 分钟）→ 超时给足
     poll: float = 0.5                   # 轮询间隔
@@ -178,6 +180,9 @@ class RunConfig:
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
         if self.poll <= 0:
             self.poll = 0.01
+        if self.round_minutes and self.round_minutes > 0:
+            # 单轮超时 = 挑战时长 + 5 分钟缓冲（加载/结算/评分弹窗都算在里面）
+            self.round_timeout = float(self.round_minutes) * 60.0 + 300.0
         if not self.max_polls_per_round:
             self.max_polls_per_round = int(self.round_timeout / self.poll) + 10
 
