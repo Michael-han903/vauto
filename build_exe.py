@@ -22,6 +22,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# GitHub Actions 的 Windows 运行器默认 stdout 编码是 ANSI（charmap）→ 打印 "✓" 这类
+# 非 ASCII 字符直接 UnicodeEncodeError 崩掉（2026-10-04 CI 实测踩过）。统一切 UTF-8。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 README = """《地平线6》自动化控制台 —— 使用说明
 =====================================
 
