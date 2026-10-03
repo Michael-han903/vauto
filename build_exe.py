@@ -57,12 +57,34 @@ def run(cmd) -> None:
     subprocess.check_call([str(c) for c in cmd], cwd=str(ROOT))
 
 
+def _wipe_dist() -> None:
+    """先把旧的 dist/vauto 清干净。
+
+    踩过的坑：残留目录（尤其拷过 1.1GB 金标帧的那种）会让 PyInstaller 的 --clean
+    半路 WinError 5/32（"拒绝访问 / 另一个程序正在使用"）。删不掉就**改名让路**，
+    绝不让一次旧残留把整次打包搞死。
+    """
+    import time as _t
+    dist = ROOT / "dist" / "vauto"
+    if not dist.exists():
+        return
+    shutil.rmtree(dist, ignore_errors=True)
+    if dist.exists():
+        try:
+            dist.rename(dist.with_name(f"vauto_old_{int(_t.time())}"))
+            print("[i] 旧 dist/vauto 删不掉（被占用？）→ 已改名让路")
+        except Exception as exc:
+            print(f"[!] 旧 dist/vauto 既删不掉也改不了名：{exc}")
+            print("    请关掉正在运行的 vauto.exe / 资源管理器窗口后再试。")
+            raise
+
+
 def main() -> int:
+    _wipe_dist()
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
          "--onedir", "--console", "--name", "vauto",
          "--add-data", "templates;templates",
          "--add-data", "logs/replay;logs/replay",
-         "--add-data", "golden_frames;golden_frames",   # 离线自检的金标帧
          "--hidden-import", "win32timezone",
          # vauto/flow 里有**动态导入**（importlib 之类）→ 静态分析抓不全，必须整包收集，
          # 否则运行时报 ModuleNotFoundError: No module named 'vauto.errors'（实测踩过）
@@ -83,9 +105,22 @@ def main() -> int:
     replay_src = ROOT / "logs" / "replay"
     if replay_src.is_dir():
         shutil.copytree(replay_src, dist / "logs" / "replay", dirs_exist_ok=True)
-    gf = ROOT / "golden_frames"                      # 金标帧（--selftest 用；回放按 cwd 读）
+    # 金标帧：仓库里有 1.1GB，全部打进去太夸张；offline_replay 只取每个类别的**前几张**
+    # （sorted(...)[:in_round] / [:settle]）→ 只拷前 6 张。两个位置都放：
+    #   _internal/golden_frames   ← offline_replay 里 GOLDEN=Path(__file__).parent/… 走这里
+    #   golden_frames             ← 兜底（万一哪天改成 cwd 相对）
+    gf = ROOT / "golden_frames"
     if gf.is_dir():
-        shutil.copytree(gf, dist / "golden_frames", dirs_exist_ok=True)
+        for sub in ("challenge_hud", "challenge_result", "car_mastery_page"):
+            sd = gf / sub
+            if not sd.is_dir():
+                continue
+            picks = sorted(sd.glob("*.png"))[:6]
+            for dst_root in (dist / "_internal" / "golden_frames", dist / "golden_frames"):
+                dst = dst_root / sub
+                dst.mkdir(parents=True, exist_ok=True)
+                for f in picks:
+                    shutil.copy2(f, dst / f.name)
     docs = dist / "docs"
     docs.mkdir(exist_ok=True)
     for f in ("运行手册.md", "业务实测要点.md", "标定报告.md"):
