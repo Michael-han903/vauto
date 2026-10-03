@@ -539,8 +539,30 @@ class Runner:
                 self._leave_mastery()
                 break
             else:
+                # 【2026-10-03 修】解锁异常**不再静默跳过继续烧车**：用户实测连丢 4 台
+                # （第 22~25 台全 timeout_wait_unlock）却从不去 22B 刷点 —— 因为原来只有
+                # no_points 才触发"回 A"。兜底：连续 2 次解锁异常 → 一律按点数不足处理。
+                self._unlock_stall = getattr(self, "_unlock_stall", 0) + 1
                 self.stats["errors"] += 1
-                print(f"  [!] 解锁异常：{state}")
+                print(f"  [!] 解锁异常：{state}（连续 {self._unlock_stall} 次）")
+                self.log.event("unlock_stall", state=state, streak=self._unlock_stall)
+                if self._unlock_stall >= 2:
+                    self.stats["errors"] -= 1
+                    self.stats["no_points"] += 1
+                    self._need_points = True
+                    self.log.event("unlock_stall_too_many",
+                                   note="连续 2 次解锁异常 → 按点数不足处理：切 22B 刷点")
+                    print("  [B] 连续解锁异常 → 按点数不足处理：该回 A 刷点了")
+                    self._seen_cars = []
+                    self._seed_once = False
+                    self._unreachable = []
+                    self._all_cars_seen = False
+                    self.log.event("b_reset_after_no_points",
+                                   note="（由连续解锁异常转来）清空跳过记忆，跑完挑战从头重新挑")
+                    self._leave_mastery()
+                    break
+            if state in ("unlocked", "already"):
+                self._unlock_stall = 0
             self._leave_mastery()
             if need_fav:
                 # 【2026-10-03 用户口径】点满（或本来就满）→ 回车 → ↓(添加至收藏) → 回车。
@@ -1677,15 +1699,37 @@ class Runner:
         self.sleep(max(1.6, self.cfg.poll * 2))
         gone_streak = 0
         deadline = time.monotonic() + self.cfg.page_timeout
+        _p_thr = self.s.dets["popup_no_resource"].threshold
         while True:
             frame = self.frame()
+            # 【2026-10-03 修·竞态】「不够支付全部」弹窗**淡入时精通页标题先变暗** →
+            # 下面的页面检查（原始分数、当场生效）会抢先判"掉出精通页" →
+            # no_points 永远轮不到 → 也就永远不会触发"回 22B 刷点"（用户实测连丢 4 台）。
+            # 所以弹窗先用**原始分数**直接看一眼，再去抖路径兜底。
+            _p_sc, _ = self._probe_loc("popup_no_resource", frame)
+            if _p_sc == _p_sc and _p_sc >= _p_thr:
+                self.press(self.cfg.confirm_key, "关掉「不够支付全部」")
+                self.log.event("no_points", popup_score=round(_p_sc, 3))
+                return "no_points"
             if self.observe("popup_no_resource", frame) is not None:
                 self.press(self.cfg.confirm_key, "关掉「不够支付全部」")
                 self.log.event("no_points")
                 return "no_points"
             if self._probe_loc("page_title_mastery", frame)[0] < self.s.dets["page_title_mastery"].threshold:
-                self.log.event("unlock_lost_page", gone_streak=gone_streak)
-                print("  [!] 解锁中掉出了精通页 → 不判成功")
+                # 掉页面前先等 1.2 秒 —— 弹窗淡入可能就是这么一会儿（原始分数轮询）
+                _t0 = time.monotonic()
+                while time.monotonic() - _t0 < 1.2:
+                    _f2 = self.frame()
+                    _p2, _ = self._probe_loc("popup_no_resource", _f2)
+                    if _p2 == _p2 and _p2 >= _p_thr:
+                        self.press(self.cfg.confirm_key, "关掉「不够支付全部」")
+                        self.log.event("no_points", popup_score=round(_p2, 3),
+                                       via="lost_page_wait")
+                        return "no_points"
+                    self.sleep(self.cfg.poll)
+                _shot = self._save_evidence(frame, "unlock_lost_page")
+                self.log.event("unlock_lost_page", gone_streak=gone_streak, shot=_shot)
+                print(f"  [!] 解锁中掉出了精通页 → 不判成功（证据: {_shot}）")
                 return "timeout_wait_unlock"
             hit = self.observe("hint_unlock_all", frame)
             if not det.confirmed and hit is None:
@@ -1697,6 +1741,17 @@ class Runner:
             else:
                 gone_streak = 0
             if time.monotonic() >= deadline:
+                # 【2026-10-03 修】超时**必须留证据 + 判性质**：
+                # 提示还在 = 按了 Y/回车却没解锁 → 最可能就是"点数不够" → 当 no_points 处理
+                # （回 22B 去刷点），而不是把这台车静默丢下、继续烧下一台。
+                _shot = self._save_evidence(frame, "unlock_timeout")
+                _h_sc, _ = self._probe_loc("hint_unlock_all", frame)
+                self.log.event("unlock_timeout", shot=_shot,
+                               hint_score=(round(_h_sc, 3) if _h_sc == _h_sc else None))
+                if _h_sc == _h_sc and _h_sc >= det.threshold:
+                    self.log.event("unlock_stalled_no_points", hint_score=round(_h_sc, 3))
+                    print("  [B] 按了 Y/回车提示仍在（疑似点数不够）→ 按点数不足处理")
+                    return "no_points"
                 return "timeout_wait_unlock"
             self.sleep(self.cfg.poll)
 
