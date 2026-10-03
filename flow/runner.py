@@ -1083,6 +1083,19 @@ class Runner:
             if cur_car_tile is not None:
                 tbox = cur_car_tile
             if tbox is None:
+                # 【2026-10-03 用户日志实测 favorite_walk_fail 的根因】指纹对不上就认为
+                # "看不到目标" —— 但**刚处理完的车就是当前车**，而当前车那格是**选中态**：
+                # 黄框把它撑大（实测 (800,408,680x520) vs 未选中 (816,424,648x488)，差
+                # 16~32 像素），车名指纹按"框角+固定偏移"裁 → 前后对不齐（±4px 救不回来）。
+                # 退一步：用「驾驶中」图标（drive_badge）直接找当前车那格 —— 全列表里只有
+                # 它是那个图标的持有者，而且**不受选中态影响**。
+                for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                    if self._is_current_car(frame, (r, c, bx, by, bw, bh, has, sc)):
+                        tbox = (bx, by, bw, bh)
+                        self.log.event("walk_fp_fallback_badge", cell=[r, c])
+                        print(f"  [找] 指纹没对上 → 用「驾驶中」图标定位当前车 ({r},{c}) ✓")
+                        break
+            if tbox is None:
                 self.log.event("walk_fp_fail", why="target_not_visible")
                 return False
             if (_ov(cbox[0], cbox[0] + cbox[2], tbox[0], tbox[0] + tbox[2]) > 0.5
