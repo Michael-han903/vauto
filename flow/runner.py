@@ -66,7 +66,8 @@ DETECTORS = (
     "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
     "car_tile_22b",                                         # 「我的车辆」里 22B 那一格（换回 22B 用）
     "fav_heart",                                            # 车格右下角的 ♥ = 已加入收藏（B 选车用）
-    "panel_manufacturer", "brand_subaru",                   # 「制造商」面板 +「斯巴鲁」格（找 22B 快路）
+    "panel_manufacturer", "brand_subaru",
+    "brand_subaru_sel",                                     # 「斯巴鲁」被选中时的样子（黑底白字 ✗）
 )
 # 可选判据：没有也能跑（car_current_menu 在「刚上车的淡入帧」上分数不稳，标定可能把它判掉）
 OPTIONAL_DETECTORS = ("car_current_menu",)
@@ -2016,6 +2017,15 @@ class Runner:
             frame = self.frame()
             det = self.s.dets.get("brand_subaru")
             sc, m = self._probe_loc("brand_subaru", frame)
+            # 【2026-10-03 用户参考图·关键】「斯巴鲁」**被选中时变成黑底白字** ✗：
+            # 只用白底黑字的模板 → 高亮挪到它上面时反而匹配不上 → 永远"到不了"→ 来回移动 ✗。
+            # 所以同时匹配"已选中"模板，两个谁分高算谁在。
+            det_sel = self.s.dets.get("brand_subaru_sel")
+            if det_sel is not None:
+                sc_sel, m_sel = self._probe_loc("brand_subaru_sel", frame)
+                if sc_sel == sc_sel and sc_sel >= det_sel.threshold and (m is None or sc_sel > sc):
+                    m = m_sel
+                    sc = sc_sel
             # 【2026-10-03 修·"来回移动卡死"的根因】没到阈值 = 屏上确实没有「斯巴鲁」✗ ——
             # 绝不能拿噪声分当目标去导航（之前就是这么来回挪的 ✗）。没达标就翻页找。
             if det is not None and (sc != sc or sc < det.threshold):
