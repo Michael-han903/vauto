@@ -19,3 +19,4 @@ dist/
 build/
 *.spec
 vauto.bundle
+.gh_token
