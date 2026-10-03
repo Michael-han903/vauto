@@ -69,9 +69,12 @@ class Launcher:
         self.stack = None
         self.worker: Optional[threading.Thread] = None
         self.done_flag = False
+        self.base_cfg = None              # 载入的配置（没有就是 RunConfig 默认）
+        self.overrides: dict = {}         # 「高级设置」里的覆盖项
 
         self._build_ui()
         self._refresh_windows()
+        self._load_saved()
         self.root.after(250, self._pump)
         self.root.after(300, self._tick_status)
 
@@ -142,6 +145,8 @@ class Launcher:
         self.btn_start.pack(side="right", padx=4)
         self.btn_stop = tk.Button(row, text="停止", width=10, state="disabled", command=self._stop)
         self.btn_stop.pack(side="right", padx=4)
+        tk.Button(row, text="高级设置…", width=12,
+                  command=self._open_advanced).pack(side="right", padx=4)
         tk.Button(row, text="打开日志文件夹", width=12,
                   command=self._open_logs).pack(side="right", padx=4)
 
@@ -171,6 +176,43 @@ class Launcher:
                  anchor="w", fg="#999999").pack(fill="x", padx=10, pady=(0, 6))
 
     # ---------------- 交互 ----------------
+    def _load_saved(self) -> None:
+        """启动时自动载入 exe 旁边的 vauto_config.json（有就用；没有 = 出厂默认）。"""
+        from flow.config import RunConfig
+        try:
+            from flow.advanced import config_path_near_exe
+            from flow.config import load_config
+            p = config_path_near_exe()
+            self.base_cfg = load_config(p) if p.is_file() else RunConfig()
+            cfg = self.base_cfg
+            if p.is_file():
+                self._say(f"[i] 已载入配置 {p}\n")
+            # 基本项回填主界面（真按键永不自动勾——安全第一）
+            self.var_phase.set(cfg.phase)
+            self.var_rounds.set(str(cfg.rounds)); self.var_cycles.set(str(cfg.cycles))
+            self.var_cars.set(str(cfg.cars)); self.var_event.set(bool(cfg.enter_event))
+            self.var_code.set(cfg.share_code); self.var_minutes.set(f"{cfg.round_minutes:g}")
+            # 其余字段进 overrides
+            from dataclasses import fields as _df
+            basic = {"title_key", "phase", "rounds", "cars", "cycles", "enter_event",
+                     "dry_run", "share_code", "round_minutes", "hotkey", "replay"}
+            self.overrides = {f.name: getattr(cfg, f.name) for f in _df(cfg)
+                              if f.name not in basic}
+        except Exception as exc:
+            self._say(f"[i] 配置载入跳过: {exc}\n")
+            self.base_cfg = RunConfig(); self.overrides = {}
+
+    def _open_advanced(self) -> None:
+        from flow.advanced import open_advanced
+        from flow.config import RunConfig
+        base = self.base_cfg or RunConfig()
+
+        def _on_apply(vals, msg):
+            self.overrides = vals
+            self._say(f"[i] 高级设置{msg}（共 {len(vals)} 项）\n")
+
+        open_advanced(self.root, base, self.overrides or {}, _on_apply)
+
     def _open_logs(self) -> None:
         d = os.path.join(os.getcwd(), "logs")
         os.makedirs(d, exist_ok=True)
@@ -280,7 +322,10 @@ class Launcher:
                 from flow.keepawake import keep_awake
                 ka = keep_awake(True)
                 print("  [准备] 防息屏/防休眠：" + ("已启用 ✓" if ka.active else "未生效 ✗"))
-            cfg = RunConfig()
+            from flow.advanced import config_path_near_exe
+            from flow.config import load_config as _lc
+            _p = config_path_near_exe()
+            cfg = _lc(_p) if _p.is_file() else RunConfig()
             cfg.title_key = self.var_title.get().strip()
             cfg.phase = self.var_phase.get()
             cfg.rounds = int(self.var_rounds.get())
@@ -290,6 +335,12 @@ class Launcher:
             cfg.share_code = self.var_code.get().strip()
             cfg.round_minutes = float(self.var_minutes.get())
             cfg.__post_init__()                 # 让时长立即推导单轮超时
+            for _k, _v in (self.overrides or {}).items():
+                try:
+                    setattr(cfg, _k, _v)
+                except Exception:
+                    pass
+            cfg.__post_init__()                 # 高级项生效（含超时推导）
             cfg.dry_run = not bool(self.var_live.get())
             print(f"[+] 配置：阶段={cfg.phase} 轮数={cfg.rounds} 车数={cfg.cars} "
                   f"循环={cfg.cycles} 进赛事={cfg.enter_event} 代码={cfg.share_code} 时长={cfg.round_minutes:g}分 "
