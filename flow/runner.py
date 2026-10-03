@@ -545,7 +545,9 @@ class Runner:
           当前车 ×0、其它车 ×1。**全程不上车** → 省掉每台 13~18 秒加载。
         结束条件：光标绕回起点（与前几台指纹相同）或连续重复同一台 / 达安全上限。
         """
-        cap = max_cars if max_cars > 0 else self.cfg.cars_cap
+        # 【2026-10-03 用户要求】车库几千辆 → 上限单独给（默认 10 万 ≈ 不限），
+        # 别动 B 阶段用的 cars_cap（那个是"跑满就告警"的安全阀）
+        cap = max_cars if max_cars > 0 else int(getattr(self.cfg, "unfav_cap", 100000))
         print()
         print(f"===== 取消收藏阶段：逐辆检查（上限 {cap} 台，不进车） =====")
         self.status.update(state="run", phase="取消收藏", round="-")
@@ -556,10 +558,34 @@ class Runner:
         if not self.click_match("tile_change_car", note="点「更换车辆」"):
             print("  [!] 点不到「更换车辆」，结束")
             return {"unfav_checked": 0, "unfav_cancelled": 0}
+        # 【2026-10-03 修·用户实测】点完「更换车辆」到列表画完之间有过渡帧：
+        # 立刻抓帧会"光标不在任何车格上"直接收工（用户那次整轮只跑了 4.2 秒 ✗）。
+        # 先等车库列表判据出现，再等一小段让高亮框落位。
+        if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
+            print("  [!] 取消收藏：换车列表没打开")
+            self.log.event("unfav_fail", where="list_not_open")
+            return {"unfav_checked": 0, "unfav_cancelled": 0}
+        self.sleep(0.6)
+        # 预检：光标必须落在一个车格上；没有就按一下 ↓ 把选中框"叫出来"，最多 5 次
+        for _try in range(5):
+            _f = self.frame()
+            _t = self._grid_tiles(_f)
+            _b = self._cursor_box(_f, _t)
+            _ok = False
+            if _t and _b is not None:
+                _cx, _cy = (_b[0] + _b[2]) // 2, (_b[1] + _b[3]) // 2
+                _ok = any(t[2] <= _cx <= t[2] + t[4] and t[3] <= _cy <= t[3] + t[5]
+                          for t in _t)
+            if _ok:
+                break
+            print(f"  [取消收藏] 光标还没落到车格上（第 {_try+1}/5 次）→ 按 ↓ 叫出选中框")
+            self.press("down", "让选中框落到车格上")
+            self.sleep(self.cfg.grid_walk_dwell)
         checked = cancelled = 0
         first_fps: list = []
         last_fp = None
         same_streak = 0
+        wrap_hits = 0
         for i in range(cap):
             self.s.stop.check()
             frame = self.frame()
@@ -585,10 +611,15 @@ class Runner:
                 same_streak = 0
             if fp is not None:
                 if any(self._fp_diff(fp, f0) < self.cfg.fp_same_tol for f0 in first_fps):
-                    print(f"  [取消收藏] 光标绕回起点 → 全列表检查完（共 {checked} 台）")
-                    break
-                if len(first_fps) < 12:
-                    first_fps.append(fp)
+                    wrap_hits += 1          # 同款同名车也可能撞一次 → 连着 3 次才算真绕回
+                    if wrap_hits >= 3:
+                        print(f"  [取消收藏] 光标绕回起点 → 全列表检查完（共 {checked} 台）")
+                        break
+                else:
+                    if wrap_hits:
+                        wrap_hits = 0
+                    if len(first_fps) < 12:
+                        first_fps.append(fp)
             last_fp = fp
             checked += 1
             if bool(cur_tile[6]):                       # 有 ♥ → 取消收藏

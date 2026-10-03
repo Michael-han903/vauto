@@ -88,6 +88,8 @@ class RunConfig:
     cars_cap: int = 1000
     car_load_wait: float = 20.0         # 上车加载等待（实测 13~18s，留余量）
 
+    unfav_cap: int = 100000             # 「只取消收藏」阶段的台数上限（车库几千辆 → 给足；
+                                        # F1 随时能停。与 B 阶段的 cars_cap 各管各的）
     use_manufacturer_panel: bool = True  # 【2026-10-03 用户要求】找 22B 时优先用
                                           # 「制造商」面板过滤（智能找车厂、不记坐标）；
                                           # 认不出面板就自动退回逐列扫描
