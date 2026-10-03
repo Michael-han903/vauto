@@ -839,13 +839,20 @@ class Runner:
             out = []
             for r, row in enumerate(rows):
                 for c, (bx, by, bw, bh) in enumerate(sorted(row)):
-                    sc = _score(bx, by, ox, oy, rw, rh)
-                    # 【2026-10-03 用户指路】当前驾驶的车辆被收藏时，♥ 画在驾驶图标的左边；
-                    # 判据要「两个位置都查」。实机图实测：当前车 标准位 0.271 / 左侧位 0.995；
-                    # 普通车 1.000 / 0.778。 → 两处取最大值，>= 阈值就算已收藏。
-                    sc2 = _score(bx, by, ox2, oy2, rw2, rh2, use=det2)
-                    if sc2 == sc2 and (sc != sc or sc2 > sc):
-                        sc = sc2
+                    # 【2026-10-03 用户口径】"对每一辆车做两次判断：一次是常规的收藏图标，
+                    # 另一次是当前驾驶+收藏图标的混合 —— 可以先明确判断到了是当前驾驶，
+                    # 然后再看左侧是不是已经收藏。"
+                    # → 不再"两处取最大"，而是**按身份选用位置**（先判身份、再看图标）：
+                    #   是当前驾驶的车 → 它的 ♥ 画在「驾驶图标左侧」→ 只看左侧位；
+                    #   其它车         → 只看标准位。
+                    # 这样每个位置的判据都只在**它该出现的上下文**里生效：
+                    # 左侧位模板带黄绿方块上下文，套普通车本来就不该用；标准位同理。
+                    _is_cur = self._is_current_car(
+                        frame, (r, c, bx, by, bw, bh, False, float("nan")))
+                    if _is_cur:
+                        sc = _score(bx, by, ox2, oy2, rw2, rh2, use=det2)
+                    else:
+                        sc = _score(bx, by, ox, oy, rw, rh)
                     out.append((r, c, bx, by, bw, bh, bool(sc == sc and sc >= thr), sc))
             return out
         except Exception:
