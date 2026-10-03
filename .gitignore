@@ -18,3 +18,4 @@ templates/自检_*.png
 dist/
 build/
 *.spec
+vauto.bundle
