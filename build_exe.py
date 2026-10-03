@@ -81,16 +81,20 @@ def _wipe_dist() -> None:
 
 def main() -> int:
     _wipe_dist()
-    run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-         "--onedir", "--console", "--name", "vauto",
-         "--add-data", "templates;templates",
-         "--add-data", "logs/replay;logs/replay",
-         "--hidden-import", "win32timezone",
-         # vauto/flow 里有**动态导入**（importlib 之类）→ 静态分析抓不全，必须整包收集，
-         # 否则运行时报 ModuleNotFoundError: No module named 'vauto.errors'（实测踩过）
-         "--collect-submodules", "vauto",
-         "--collect-submodules", "flow",
-         str(ROOT / "vauto_gui.py")])
+    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
+           "--onedir", "--console", "--name", "vauto",
+           "--add-data", "templates;templates"]
+    # 回放数据（logs/replay）在仓库里是被 gitignore 的 → 别人 clone / CI 上不一定有，
+    # 没有就**别加这个参数**（PyInstaller 遇到不存在的 add-data 路径会直接报错）。
+    if (ROOT / "logs" / "replay").is_dir():
+        cmd += ["--add-data", "logs/replay;logs/replay"]
+    cmd += ["--hidden-import", "win32timezone",
+            # vauto/flow 里有**动态导入**（importlib 之类）→ 静态分析抓不全，必须整包收集，
+            # 否则运行时报 ModuleNotFoundError: No module named 'vauto.errors'（实测踩过）
+            "--collect-submodules", "vauto",
+            "--collect-submodules", "flow",
+            str(ROOT / "vauto_gui.py")]
+    run(cmd)
 
     dist = ROOT / "dist" / "vauto"
     if not (dist / "vauto.exe").exists():

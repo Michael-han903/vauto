@@ -1,0 +1,55 @@
+name: 打包 Windows exe
+
+# 触发方式：
+#   1) 手动：仓库页 Actions → 本工作流 → Run workflow（或 API workflow_dispatch）
+#   2) 打 tag：git push origin v0.2 之类 → 自动构建并挂到同名 Release
+#
+# 产物：vauto-win64.zip（即 dist/vauto 整个文件夹），构建产物在 Actions 页可随时下载，
+#       同时自动挂到 Release。整个过程在 GitHub 的 Windows 服务器上完成，无需本地打包上传。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy opencv-python mss pywin32 pyinstaller
+
+      - name: PyInstaller 打包
+        run: python build_exe.py
+
+      - name: 压缩为单文件
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/vauto -DestinationPath vauto-win64.zip -Force
+          Get-Item vauto-win64.zip | Select-Object Name, Length
+
+      - name: 上传构建产物（Actions 页可下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: vauto-win64
+          path: vauto-win64.zip
+          retention-days: 30
+
+      - name: 挂到 Release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1
+          files: vauto-win64.zip
