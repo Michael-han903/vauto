@@ -220,6 +220,7 @@ class Runner:
         self._last_car_fp = None           # 刚处理的那台车的车名指纹（加收藏前核对用）
         self._unreachable: list = []       # 本次运行里"走不到"的车（按指纹记，不再重复选它）
         self._seen_screens: list = []      # 本次翻列表看过的每屏缩略签名（判"是否绕回开头"）
+        self._need_points = False          # B 撞到「技能点不足」时置位 → 主循环据此去刷挑战
         self._t0 = time.monotonic()
 
     # ---------------- 台账 ---------------- #
@@ -521,6 +522,7 @@ class Runner:
                 print("  [B] 这台车早就解锁过，跳过")
             elif state == "no_points":
                 self.stats["no_points"] += 1
+                self._need_points = True        # 主循环据此决定"切 22B 去刷挑战"
                 print("  [B] 技能点不足 → 该回 A 刷点了")
                 # 【2026-10-03 用户口径】"技能点不够的话是要切换到斯巴鲁22B去挑战里面跑技能点…
                 # 跑完挑战之后你要重新重头再来挑选未收藏车辆"：
@@ -2117,43 +2119,49 @@ class Runner:
             except Exception as _exc:
                 self.log.event("frame_sanity_error", err=str(_exc)[:160])
 
-            # ---- 主循环：[进赛事 → 跑 N 轮] → [B 一直解锁到「技能点不足」] → [换回 22B] ----
-            # 用户口径（2026-10-02）："直到弹出提示说技能点不足再回去跑挑战"。
-            # --cycles 默认 1（一轮就退），>1 时自动"回 A 刷点 → 再花"，不用手动重跑命令。
+            # ---- 主循环（2026-10-03 换序）：先花 → 花不动才去赚 → 赚完再花 ----
+            # 用户原话："以后启动程序时先看一看技能点够不够点满一辆车，不够的话再去斯巴鲁22b"。
+            # 所以启动**先跑 B**（一路解锁到「技能点不足」为止，这本身就是"点够不够点满车"的检查）；
+            # 只有真的撞到不足，才切回 22B → 进赛事 → 跑 N 轮挑战 → 回来接着花。
             cyc_total = max(1, int(cfg.cycles))
             for cyc in range(1, cyc_total + 1):
                 if cyc > 1:
-                    print(f"\n########## 循环 {cyc}/{cyc_total}"
-                          f"（上一轮 B 已刷到「技能点不足」→ 回来再跑挑战）##########")
-                if cfg.a_enabled:
-                    # 【2026-10-03】A 之前确保用的是 22B —— 用户要的闭环就是
-                    # "B 刷到技能点不足 → 切回斯巴鲁 22B → 去跑挑战"。幂等：在 22B 就跳过。
-                    if cfg.require_car_22b and not cfg.dry_run:
-                        print("  [A] 先确保当前车是 22B（不在就自动切）…")
-                        if not self.set_car_22b():
-                            print("  [!] 切回 22B 失败 → 停下（证据见 logs/）")
-                            return {"stopped": "to_22b_failed", **self.stats}
-                    if cfg.enter_event:
-                        # 自动开局：主菜单 → 赛事（用户口述序列）。失败就停下，不盲跑。
-                        if not self.enter_event():
-                            print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
-                            if not cfg.dry_run:
-                                return {"stopped": "enter_event_failed", **self.stats}
-                    self.phase_farm(cfg.rounds)
+                    print(f"\n########## 循环 {cyc}/{cyc_total}（刚刷完挑战，回来接着花）##########")
+                # ① 先花：B 一直解锁到「技能点不足」（这就是"点够不够点满车"的检查）
                 spent_before = self.stats.get("unlock_presses", 0)
-                if cfg.b_enabled and cfg.phase != "farm":
+                did_b = bool(cfg.b_enabled and cfg.phase != "farm")
+                if did_b:
                     self.phase_spend(cfg.cars)
-                # 【闭环的关键一步】B 之后把车换回 22B —— 否则下一轮 A 用的不是 22B
-                # （A 的节奏/判据都是按它标定的）。--phase spend 也会走到这里，方便单独试。
-                if cfg.b_enabled and cfg.back_to_22b and not cfg.dry_run:
-                    if not self.set_car_22b():
-                        print("[!] 换回 22B 失败 → 停下（下次跑 A 之前请手动换车；证据见 logs/）")
-                        return {"stopped": "back_to_22b_failed", **self.stats}
-                # 一整轮 B 一次都没解锁 → 大概率所有车的技能都点完了，再循环只是白刷挑战
-                if (cfg.b_enabled and cfg.phase != "farm" and cyc < cyc_total
-                        and self.stats.get("unlock_presses", 0) == spent_before):
-                    print(f"[=] 本轮 B 没解锁任何一页（所有车可能都已点完）→ 停在循环 {cyc}/{cyc_total}")
+                    need_points = bool(getattr(self, "_need_points", False))
+                    self._need_points = False
+                else:
+                    need_points = True          # 没开 B（--phase farm：只刷）→ 直接去刷，跳过判断
+                spent_now = self.stats.get("unlock_presses", 0) - spent_before
+                if not cfg.a_enabled:
+                    break                       # --phase spend：只花不刷（用户手动分开跑）
+                if did_b and not need_points:
+                    # 没撞到"点数不足"= 每台车都点得满 / 没车可点 → 不必去刷挑战，收工
+                    print(f"  [=] 这轮没遇到「技能点不足」（本轮解锁 {spent_now} 次）"
+                          f"→ 不用去刷挑战，收工")
                     break
+                # ② 花不动了 → 切回 22B 去刷挑战（幂等：在 22B 就跳过）
+                print("  [A] 技能点不够了 → 切回斯巴鲁 22B 去跑挑战…")
+                self.log.event("cycle_farm_begin", cycle=cyc, need_points=True)
+                if cfg.require_car_22b and not cfg.dry_run:
+                    if not self.set_car_22b():
+                        print("  [!] 切回 22B 失败 → 停下（证据见 logs/）")
+                        return {"stopped": "to_22b_failed", **self.stats}
+                if cfg.enter_event:
+                    if not self.enter_event():
+                        print("[!] 自动进赛事失败 → 停下（请手动进赛事，或看 logs/ 里的证据图）")
+                        if not cfg.dry_run:
+                            return {"stopped": "enter_event_failed", **self.stats}
+                self.phase_farm(cfg.rounds)
+                # ③ 刷完把车换回 22B（下一轮 A 还得用它；也顺手把游戏留在正常状态）
+                if cfg.require_car_22b and cfg.back_to_22b and not cfg.dry_run:
+                    if not self.set_car_22b():
+                        print("[!] 换回 22B 失败 → 停下（证据见 logs/）")
+                        return {"stopped": "back_to_22b_failed", **self.stats}
         except AbortedByUser as exc:
             print(f"\n[急停] {exc}")
             # 写进日志：否则事后只剩一条 release_all 收尾，分不清"人停的"还是"自己停的"
