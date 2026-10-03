@@ -2009,19 +2009,28 @@ class Runner:
         """
         if self.s.dets.get("brand_subaru") is None:
             return False
+        trail: list = []
+        osc = 0
         for _ in range(80):
             self.s.stop.check()
             frame = self.frame()
+            det = self.s.dets.get("brand_subaru")
             sc, m = self._probe_loc("brand_subaru", frame)
+            # 【2026-10-03 修·"来回移动卡死"的根因】没到阈值 = 屏上确实没有「斯巴鲁」✗ ——
+            # 绝不能拿噪声分当目标去导航（之前就是这么来回挪的 ✗）。没达标就翻页找。
+            if det is not None and (sc != sc or sc < det.threshold):
+                m = None
             g = cv2.cvtColor(frame[150:2140, 420:3400], cv2.COLOR_BGR2GRAY)
             dark = (g < 60).astype("uint8")
             n, _lab, st, _c = cv2.connectedComponentsWithStats(dark, 8)
             hb = None
+            _best_a = 0
             for i in range(1, n):
                 x, y, w, h, a = st[i]
-                if 560 <= w <= 780 and 70 <= h <= 150 and a > 30000:
+                # 高亮格 ≈ 696x100（收窄范围 + 取面积最大的那块，避免误选背景碎片）
+                if 600 <= w <= 760 and 85 <= h <= 160 and a > 30000 and a > _best_a:
                     hb = (x + 420, y + 150, w, h)
-                    break
+                    _best_a = a
             if hb is None or m is None:
                 self.press("down", "翻面板找车厂")
                 self.sleep(0.35)
@@ -2040,6 +2049,19 @@ class Runner:
                 key = "right"
             else:
                 key = "left"
+            # 【防卡死】高亮在少数几个位置之间反复横跳（我见过的"来回移动卡死"）→ 放弃快路
+            _cell = (hx // 300, hy // 60)
+            if _cell in trail:
+                osc += 1
+                if osc >= 6:
+                    self.log.event("panel_brand_oscillating", brand=brand, cell=list(_cell))
+                    print("  [!] 面板里来回移动（识别不稳）→ 放弃面板快路，退回慢扫描")
+                    return False
+            else:
+                osc = 0
+                trail.append(_cell)
+                if len(trail) > 8:
+                    trail.pop(0)
             self.press(key, "挪向 " + brand)
             self.sleep(self.cfg.grid_walk_dwell)
         self.log.event("panel_brand_not_found", brand=brand)
