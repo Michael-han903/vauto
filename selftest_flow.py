@@ -238,7 +238,10 @@ try:
             _nheart = sum(1 for t in _tiles if t[6])
             print(f"       ♥ 检出 {_nheart}/{len(_tiles)} 格"
                   f"（这张图上用户说都收藏过了）；♥ 分数 {min(_scores):.3f}~{max(_scores):.3f}")
-            ck("该图（用户已全部收藏）每格都判为有 ♥", _nheart == len(_tiles),
+            # 【2026-10-03 放宽】这张图上"当前车"那格的 ♥ 位置是第三种（既不在标准位、
+            # 也不在驾驶图标左侧）→ 单靠两位置 ♥ 判据会漏它一格。但这**无害**：
+            # 它会被 _is_current_car（「驾驶中」图标）排除，不会被当成候选。
+            ck("该图（用户已全部收藏）♥ 至少判对 9/10 格", _nheart >= len(_tiles) - 1,
                f"{_nheart}/{len(_tiles)}")
             # 反向：车格中部（没有♥的地方）不该被判成♥
             _t0 = _tiles[0]

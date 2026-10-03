@@ -56,6 +56,7 @@ DETECTORS = (
     "popup_rate_event",                                     # 离开赛事后的「为挑战评分?」弹窗
     "popup_move_home",                                      # 车库误触的「移动至住所」确认框
     "drive_badge",                                          # 「驾驶中」小图标（=当前驾驶的车）
+    "fav_heart_left",                                       # 当前车的 ♥（画在驾驶图标左侧）
     "page_title_mastery", "page_title_garage",              # 页面
     "tile_change_car", "tile_mastery",                      # 可点击磁贴
     "menu_select_title", "option_enter_car",                # 「选择操作」菜单 + 「上车」行
@@ -811,9 +812,12 @@ class Runner:
             rw, rh = self.cfg.heart_roi
             ox2, oy2, rw2, rh2 = getattr(self.cfg, "heart_roi2", (540, 370, 70, 60))
 
-            def _score(bx, by, x, y, w, h):
+            det2 = self.s.dets.get("fav_heart_left") or det     # 左侧位专用模板（当前车的 ♥）
+
+            def _score(bx, by, x, y, w, h, use=None):
                 roi = frame[by + y:by + y + h, bx + x:bx + x + w]
-                if det is None or not roi.size:
+                use = use or det
+                if use is None or not roi.size:
                     return float("nan")
                 # 【2026-10-03 用户实测抓到的误报】TM_CCOEFF_NORMED 对**纯色区域**（比如
                 # 这块是白底）会给出虚高分数 —— 用户在截图里看到 F9/G40 两格那块明明是空白，
@@ -822,7 +826,7 @@ class Runner:
                 if float(roi.std()) < 8.0:
                     return float("nan")
                 try:
-                    hit = self.s.matcher.match_best(roi, det.template, threshold=-1.0)
+                    hit = self.s.matcher.match_best(roi, use.template, threshold=-1.0)
                     if hit is None:
                         return float("nan")
                     s = float(getattr(hit, "score", float("nan")))
@@ -839,7 +843,7 @@ class Runner:
                     # 【2026-10-03 用户指路】当前驾驶的车辆被收藏时，♥ 画在驾驶图标的左边；
                     # 判据要「两个位置都查」。实机图实测：当前车 标准位 0.271 / 左侧位 0.995；
                     # 普通车 1.000 / 0.778。 → 两处取最大值，>= 阈值就算已收藏。
-                    sc2 = _score(bx, by, ox2, oy2, rw2, rh2)
+                    sc2 = _score(bx, by, ox2, oy2, rw2, rh2, use=det2)
                     if sc2 == sc2 and (sc != sc or sc2 > sc):
                         sc = sc2
                     out.append((r, c, bx, by, bw, bh, bool(sc == sc and sc >= thr), sc))
