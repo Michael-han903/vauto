@@ -256,8 +256,7 @@ class Launcher:
         # 线程已结束但标志没复位时，按钮看着能点、点了没反应 → 只能退出重进 ✗。
         # 现在按"工作线程是否真的还活着"判断；死了就强制复位，让你能直接再启动 ✓。
         if self.running and self.worker is not None and self.worker.is_alive():
-            self._say("[i] 上一轮还在收尾，稍等一下再点；若一直如此按 F1 或关掉窗口重开
-")
+            self._say("[i] 上一轮还在收尾，稍等一下再点；若一直如此按 F1 或关掉窗口重开" + chr(10))
             return
         self.running = False
         title = self.var_title.get().strip()
