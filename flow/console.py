@@ -100,6 +100,7 @@ class Launcher:
         self.var_phase = tk.StringVar(value="both")
         for val, txt in (("both", "全自动（花↔刷 循环往复）"),
                          ("spend", "只刷 B（车库加点）"),
+                         ("unfav", "只取消收藏（逐辆检查、不上车）"),
                          ("farm", "只跑 A（挑战刷点）")):
             tk.Radiobutton(row, text=txt, variable=self.var_phase, value=val).pack(side="left", padx=4)
 

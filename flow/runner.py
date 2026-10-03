@@ -534,6 +534,89 @@ class Runner:
         return "settled"
 
     # ---------------- B 阶段 ---------------- #
+    def phase_unfav(self, max_cars: int = 0) -> dict:
+        """【2026-10-03 用户新功能】逐辆检查车库列表，把**已收藏(♥)**的车取消收藏。
+
+        用户实测菜单（两张截图）：
+          当前驾驶的车：第 1 项 = 从我的收藏中移除（4 项菜单）
+          其它车      ：第 2 项 = 从我的收藏中移除（6 项菜单）
+        → 位置与「加入收藏」完全一致（同一位置的文字随收藏状态翻转）→ 复用同一套 ↓ 次数：
+          当前车 ×0、其它车 ×1。**全程不上车** → 省掉每台 13~18 秒加载。
+        结束条件：光标绕回起点（与前几台指纹相同）或连续重复同一台 / 达安全上限。
+        """
+        cap = max_cars if max_cars > 0 else self.cfg.cars_cap
+        print()
+        print(f"===== 取消收藏阶段：逐辆检查（上限 {cap} 台，不进车） =====")
+        self.status.update(state="run", phase="取消收藏", round="-")
+        self.clear_blocking_dialog("取消收藏开始前", patience=8.0)
+        if not self._ensure_vehicle_tab():
+            print("  [!] 到不了「车辆」页，结束")
+            return {"unfav_checked": 0, "unfav_cancelled": 0}
+        if not self.click_match("tile_change_car", note="点「更换车辆」"):
+            print("  [!] 点不到「更换车辆」，结束")
+            return {"unfav_checked": 0, "unfav_cancelled": 0}
+        checked = cancelled = 0
+        first_fps: list = []
+        last_fp = None
+        same_streak = 0
+        for i in range(cap):
+            self.s.stop.check()
+            frame = self.frame()
+            tiles = self._grid_tiles(frame)
+            box = self._cursor_box(frame, tiles)
+            if not tiles or box is None:
+                print(f"  [!] 找不到光标/车格（tiles={len(tiles)}）→ 结束")
+                break
+            x1, y1, x2, y2 = box
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            cur_tile = next((t for t in tiles
+                             if t[2] <= cx <= t[2] + t[4] and t[3] <= cy <= t[3] + t[5]), None)
+            if cur_tile is None:
+                print("  [!] 光标不在任何车格上 → 结束")
+                break
+            fp = self._title_crop(frame, cur_tile[2], cur_tile[3], cur_tile[4], cur_tile[5])
+            if fp is not None and last_fp is not None and                     self._fp_diff(fp, last_fp) < self.cfg.fp_same_tol:
+                same_streak += 1
+                if same_streak >= 3:
+                    print("  [!] 连续 3 次都是同一台（光标没走动？）→ 结束")
+                    break
+            else:
+                same_streak = 0
+            if fp is not None:
+                if any(self._fp_diff(fp, f0) < self.cfg.fp_same_tol for f0 in first_fps):
+                    print(f"  [取消收藏] 光标绕回起点 → 全列表检查完（共 {checked} 台）")
+                    break
+                if len(first_fps) < 12:
+                    first_fps.append(fp)
+            last_fp = fp
+            checked += 1
+            if bool(cur_tile[6]):                       # 有 ♥ → 取消收藏
+                is_cur = self._is_current_car(frame, cur_tile)
+                before = round(float(cur_tile[7]), 3)
+                self.press(self.cfg.confirm_key, "打开「选择操作」")
+                if self._wait_for("menu_select_title", 3.0) is None:
+                    print(f"  [!] 第 {checked} 台：菜单没弹出 → 按 Esc 收手")
+                    self.press("esc", "退出菜单")
+                    self.sleep(self.cfg.esc_dwell)
+                else:
+                    for _ in range(0 if is_cur else 1):
+                        self.press("down", "移到「从我的收藏中移除」")
+                    self.press(self.cfg.confirm_key, "选「从我的收藏中移除」")
+                    self.sleep(0.9)
+                    cancelled += 1
+                    print(f"  [取消] 第 {checked} 台（{'当前车' if is_cur else '普通车'}，"
+                          f"♥ 分 {before}）→ 已选「从我的收藏中移除」")
+                    self.log.event("unfav_removed", index=checked, is_current=is_cur,
+                                   heart_before=before)
+            else:
+                print(f"  [取消收藏] 第 {checked} 台：没有 ♥ → 跳过")
+            self.press("down", "下一台车")
+            self.sleep(self.cfg.grid_walk_dwell)
+        print(f"  [取消收藏] 检查 {checked} 台，取消 {cancelled} 台")
+        self.stats["unfav_checked"] = checked
+        self.stats["unfav_cancelled"] = cancelled
+        return {"unfav_checked": checked, "unfav_cancelled": cancelled}
+
     def phase_spend(self, max_cars: int) -> dict:
         # max_cars = 0 → 「一直解锁到技能点不足」（用户要求的口径）；用 cfg.cars_cap 当安全上限，
         # 防止"所有车都解锁过了"时无限换车。
@@ -2289,6 +2372,10 @@ class Runner:
                     _ct = "∞" if infinite else str(cyc_total)
                     print("\n########## 循环 " + str(cyc) + "/" + _ct
                           + "（刚刷完挑战，回来接着花）##########")
+                if cfg.phase == "unfav":
+                    # 【2026-10-03 用户新功能】只取消收藏：逐辆检查、不上车
+                    self.phase_unfav(cfg.cars)
+                    break
                 # ① 先花：B 一直解锁到「技能点不足」（这就是"点够不够点满车"的检查）
                 spent_before = self.stats.get("unlock_presses", 0)
                 _skip_b = bool(getattr(cfg, "farm_first", False) and cyc == 1)

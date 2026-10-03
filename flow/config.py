@@ -186,7 +186,7 @@ class RunConfig:
         self.heart_roi = tuple(int(v) for v in self.heart_roi)
         self.heart_roi2 = tuple(int(v) for v in self.heart_roi2)
         self.grid_walk_keys = tuple(str(v) for v in self.grid_walk_keys)
-        if self.phase not in ("farm", "spend", "both"):
+        if self.phase not in ("farm", "spend", "both", "unfav"):
             raise ValueError(f"phase 只能是 farm/spend/both，收到 {self.phase!r}")
         if self.poll <= 0:
             self.poll = 0.01

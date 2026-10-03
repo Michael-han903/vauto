@@ -37,7 +37,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="vauto 业务运行入口（A 挑战循环 / B 刷技能点）")
     p.add_argument("--list", action="store_true", help="列出可见窗口后退出")
     p.add_argument("--title", type=str, default="", help="目标窗口标题关键字")
-    p.add_argument("--phase", choices=["farm", "spend", "both"], default="both",
+    p.add_argument("--phase", choices=["farm", "spend", "both", "unfav"], default="both",
                    help="farm=只打挑战；spend=只刷技能点；both=先 farm 再 spend")
     p.add_argument("--rounds", type=int, default=4, help="farm 阶段跑几轮挑战（默认 4）")
     p.add_argument("--cars", type=int, default=6,
