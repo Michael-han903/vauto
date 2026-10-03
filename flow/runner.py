@@ -2231,7 +2231,12 @@ class Runner:
                         if not cfg.dry_run:
                             return {"stopped": "enter_event_failed", **self.stats}
                 self.phase_farm(cfg.rounds)
-                # ③ 刷完把车换回 22B（下一轮 A 还得用它；也顺手把游戏留在正常状态）
+                # ③ 【2026-10-03 用户实测后默认关闭】刷完**不再**换回 22B。
+                # 用户原话："四轮完成之后不应该去车库里面加点吗？怎么跳转到斯巴鲁上车流程了？"
+                # 根因：此刻画面还在赛事结算/加载里（不在车库），set_car_22b 的"在 22B 就跳过"
+                # 检查看不到当前车 → 退化成**全库扫描**（≈2 分钟白跑）。而挑战过程不会换车，
+                # 下一轮循环进赛事前的 ② 会再确保一次 → 这一步是纯浪费。默认关；
+                # 想要旧行为（把游戏留在 22B 上）用 cfg.back_to_22b=True。
                 if cfg.require_car_22b and cfg.back_to_22b and not cfg.dry_run:
                     if not self.set_car_22b():
                         print("[!] 换回 22B 失败 → 停下（证据见 logs/）")
