@@ -80,7 +80,7 @@ class RunConfig:
     unlock_key: str = "y"               # 【实测】精通页 [Y] 解锁全部
     confirm_key: str = "enter"          # 【实测】确认框 / 关弹窗 / 上车
     max_cars_per_session: int = 8       # 一次 B 会话最多处理几台车（真正的退出是点数不足）
-    nav_budget: int = 24                # 走格子步数预算（见 flow/nav.py）
+    nav_budget: int = 400                # 走格子步数预算（见 flow/nav.py）
     nav_max_fail: int = 3
     # 【2026-10-02 用户实测】"来来回回就两辆车在那里换" → 每走一步都用"选中格车名指纹"
     # 判断这台车弄过没有：弄过就继续走，不走重复的车（省下每次 68 秒的上车加载）。

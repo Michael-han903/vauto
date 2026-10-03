@@ -219,6 +219,7 @@ class Runner:
         self._all_cars_seen = False        # 列表里已没有"没弄过的车"（B 可以收尾了）
         self._last_car_fp = None           # 刚处理的那台车的车名指纹（加收藏前核对用）
         self._unreachable: list = []       # 本次运行里"走不到"的车（按指纹记，不再重复选它）
+        self._seen_screens: list = []      # 本次翻列表看过的每屏缩略签名（判"是否绕回开头"）
         self._t0 = time.monotonic()
 
     # ---------------- 台账 ---------------- #
@@ -1114,6 +1115,24 @@ class Runner:
         self.log.event("walk_fp_fail", why="budget")
         return False
 
+    @staticmethod
+    def _roi_sig(roi):
+        """给一屏画面算个小签名（32x18 灰度缩略），用来判"是不是绕回看过的画面"。"""
+        if roi is None or getattr(roi, "ndim", 0) < 2 or getattr(roi, "size", 0) == 0:
+            return None
+        try:
+            small = cv2.resize(roi, (32, 18), interpolation=cv2.INTER_AREA)
+            return small.astype(np.int16)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _sig_same(a, b, tol: float = 6.0) -> bool:
+        """两个签名是不是同一屏（平均绝对差 < tol，0~255 尺度）。"""
+        if a is None or b is None or a.shape != b.shape:
+            return False
+        return float(np.abs(a - b).mean()) < tol
+
     def _is_current_car(self, frame, tile) -> bool:
         """这一格是不是**当前驾驶的车辆** —— 看它有没有「驾驶中」小图标（用户 2026-10-03 指路）。
 
@@ -1231,6 +1250,7 @@ class Runner:
         # → 原来那段"首次进列表把光标那格记成已处理"的**位置规则**已删除。
         #   现在判"是不是当前车"改用车格里的「驾驶中」小图标（见 _is_current_car）：
         #   它比位置稳（列表一滚位置就变），也比 ♥ 稳（**未收藏**的当前车两处 ♥ 都空）。
+        self._seen_screens = []        # 新的一次翻页：清空"看过哪些屏"
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
             frame = self.frame()
@@ -1323,6 +1343,21 @@ class Runner:
             # 这一屏都收藏过了 → 往右滚一列，把后面的车拉进来
             print(f"  [找] 第 {attempt} 屏：{len(tiles)} 格全都有 ♥ → 往右滚一列")
             before = self._list_roi(frame)
+            # 【2026-10-03 用户口径】"应该是翻完**全部**的车辆列表然后回到开头之后才能说没有"
+            # —— 不能按"翻了多少屏"认输（原来 nav_budget=24 就认输，用户车库远不止 24 屏）。
+            # 给每屏画面算一个缩略签名：新的屏与看过的某一屏几乎一样 → 列表已经绕回开头
+            # = 全部翻完，这才能收工。
+            _sig = self._roi_sig(before)
+            if _sig is not None:
+                for _i, _old in enumerate(self._seen_screens):
+                    if self._sig_same(_old, _sig):
+                        print(f"  [B] 滚回看过的第 {_i + 1} 屏（共看过 "
+                              f"{len(self._seen_screens)} 屏）→ 整个列表翻完了 ✓")
+                        self.log.event("grid_wrapped", screens=len(self._seen_screens),
+                                       back_to=_i + 1)
+                        self._all_cars_seen = True
+                        return False
+                self._seen_screens.append(_sig)
             self.press("right", "右移一列（找没收藏的车）")
             self.sleep(self.cfg.grid_walk_dwell)
             after = self._list_roi(self.frame())
