@@ -31,7 +31,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -223,6 +223,11 @@ class Runner:
         self._seen_screens: list = []      # 本次翻列表看过的每屏缩略签名（判"是否绕回开头"）
         self._need_points = False          # B 撞到「技能点不足」时置位 → 主循环据此去刷挑战
         self._t0 = time.monotonic()
+        # 【2026-10-03 新增·GUI】状态快照（给状态小窗看；每步更新，显示用途允许轻微竞态）
+        self.status: Dict[str, Any] = {
+            "state": "init", "phase": "-", "round": "-", "cycle": "-", "last": "",
+        }
+        self._black_since: Optional[float] = None   # 连续全黑帧起点（防息屏兜底）
 
     # ---------------- 台账 ---------------- #
     def _load_ledger(self) -> dict:
@@ -250,7 +255,33 @@ class Runner:
         if guard and self.s.guard is not None:
             if not self.s.guard.wait():
                 raise AbortedByUser("等待前台时被中断")
-        return self.s.capture.grab()
+        frame = self.s.capture.grab()
+        # 【2026-10-03 用户实测】"运行时间久了电脑会自己黑屏然后不运行"：
+        # 显示器/系统睡眠后抓到的帧可能是**全黑**（或游戏被挂起）→ 判据全废、逻辑乱走 ✗。
+        # 兜底：纯黑持续 > 3 秒 → 认定屏幕真的黑了（正常过场淡出不会有 3 秒纯黑）→
+        # 打印提示 + 等恢复（最多 300s，可被急停打断）；GUI 上显示"等待屏幕恢复"。
+        if not self.cfg.replay and int(frame[::8, ::8].max()) < 12:
+            if self._black_since is None:
+                self._black_since = time.monotonic()
+            waited = time.monotonic() - self._black_since
+            if waited > 3.0:
+                self.status["state"] = "wait_screen"
+                self.status["last"] = "屏幕全黑 → 等待恢复（省电/息屏？）"
+                print(f"  [!] 屏幕全黑已 {waited:.0f}s（息屏/睡眠？）→ 等待恢复，最多再等 300s…")
+                t_wait = time.monotonic()
+                while time.monotonic() - t_wait < 300:
+                    self.sleep(1.0)
+                    f2 = self.s.capture.grab()
+                    if int(f2[::8, ::8].max()) >= 12:
+                        print("  [i] 屏幕恢复 ✓ 继续")
+                        self._black_since = None
+                        self.status["state"] = "run"
+                        return f2
+                print("  [!] 等了 300s 屏幕仍未恢复 → 按原样继续（后面多半会判据异常）")
+                self.status["state"] = "run"
+            return frame
+        self._black_since = None
+        return frame
 
     def observe(self, name: str, frame: np.ndarray):
         return self.s.dets[name].observe(frame)
@@ -274,6 +305,7 @@ class Runner:
             # 目标窗口不在前台 → 阻塞等待（急停可打断），绝不盲按
             self.s.guard.wait()
             self.s.stop.check()
+        self.status["last"] = (note or key)          # GUI 的"最近动作"
         self.log.event("press", key=key, note=note, dry=self.cfg.dry_run)
         if self.cfg.dry_run:
             print(f"  [dry-run] 本应按下 {key!r}  ({note})")
@@ -388,6 +420,7 @@ class Runner:
     # ---------------- A 阶段 ---------------- #
     def phase_farm(self, rounds: int) -> dict:
         print(f"\n===== A 阶段：{rounds} 轮挑战（按住 W → 等结算 → Esc 重试） =====")
+        self.status.update(state="run", phase=f"A 挑战 ×{rounds}")
         settled = 0
         while settled < rounds:
             if self.cfg.max_runtime_min and \
@@ -402,6 +435,7 @@ class Runner:
                 settled += 1
                 self.stats["rounds"] += 1
                 print(f"  [A] 第 {settled}/{rounds} 轮完成")
+                self.status["round"] = f"{settled}/{rounds}"
             elif outcome == "timeout":
                 print("  [!] 本轮超时未见结算判据，继续等待下一轮")
                 settled += 1
@@ -494,6 +528,7 @@ class Runner:
         cap = max_cars if max_cars > 0 else self.cfg.cars_cap
         title = f"最多 {cap} 台车" if max_cars > 0 else f"一直解锁到「技能点不足」（安全上限 {cap} 台）"
         print(f"\n===== B 阶段：{title}（换车 → 精通页 → Y+Enter） =====")
+        self.status.update(state="run", phase="B 车库加点", round="-")
         self.clear_blocking_dialog("B 阶段开始前", patience=12.0)   # 清掉上一阶段可能留下的弹窗
         self._ensure_vehicle_tab()
         for i in range(cap):
@@ -512,6 +547,7 @@ class Runner:
                     print("  [!] 换车失败，结束 B 阶段（详情看日志/证据图）")
                 break
             print(f"  [B] 第 {i + 1} 台车：已上车")
+            self.status["last"] = "第 " + str(i + 1) + " 台车：已上车"
             state = self.unlock_current_car()
             need_fav = state in ("unlocked", "already")
             if state == "unlocked":
@@ -2208,6 +2244,7 @@ class Runner:
             # 只有真的撞到不足，才切回 22B → 进赛事 → 跑 N 轮挑战 → 回来接着花。
             cyc_total = max(1, int(cfg.cycles))
             for cyc in range(1, cyc_total + 1):
+                self.status["cycle"] = f"{cyc}/{cyc_total}"
                 if cyc > 1:
                     print(f"\n########## 循环 {cyc}/{cyc_total}（刚刷完挑战，回来接着花）##########")
                 # ① 先花：B 一直解锁到「技能点不足」（这就是"点够不够点满车"的检查）
@@ -2252,6 +2289,7 @@ class Runner:
                         return {"stopped": "back_to_22b_failed", **self.stats}
         except AbortedByUser as exc:
             print(f"\n[急停] {exc}")
+            self.status["state"] = "stopped"
             # 写进日志：否则事后只剩一条 release_all 收尾，分不清"人停的"还是"自己停的"
             # （2026-10-02 那次换车跑完就是这种情况，只能靠猜）
             self.log.event("abort", reason=str(exc)[:200])

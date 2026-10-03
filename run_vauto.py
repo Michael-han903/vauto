@@ -56,6 +56,10 @@ def parse_args(argv=None):
     p.add_argument("--probe-seconds", type=float, default=0.0,
                    help="探针自动跑多少秒后结束（0=手动 Ctrl+C）")
     p.add_argument("--selftest", action="store_true", help="离线自检：不碰屏幕与键鼠")
+    p.add_argument("--no-keep-awake", action="store_true",
+                   help="关闭「防息屏/防休眠」（默认开：长跑时阻止显示器关闭与系统睡眠）")
+    p.add_argument("--no-gui", action="store_true",
+                   help="关闭实跑状态小窗（默认开；缺 tkinter 会自动跳过）")
     return p.parse_args(argv)
 
 
@@ -121,10 +125,49 @@ def main(argv=None) -> int:
         probe_loop(stack, seconds=(args.probe_seconds or None))
         stack.capture.close()
         return 0
+    # 防息屏/防休眠（用户实测过"跑久了黑屏然后不运行"）：默认开
+    ka = None
+    if not args.no_keep_awake:
+        from flow.keepawake import keep_awake
+        ka = keep_awake(True)
+        print("  [准备] 防息屏/防休眠：" +
+              ("已启用 ✓（显示器常亮、系统不休眠）" if ka.active
+               else "未生效 ✗（非 Windows 或被策略禁用）—— 可手动跑 powercfg 兜底"))
+
     with stack.stop:
         runner = Runner(stack, cfg)
-        runner.run()
+        gui = None
+        if not args.no_gui:
+            try:
+                from flow.gui import StatusWindow
+                gui = StatusWindow(
+                    lambda: {**runner.status,
+                             "cars_done": runner.stats.get("cars_done", 0),
+                             "rounds_done": runner.stats.get("rounds", 0)},
+                    t0=runner._t0)
+                ok = gui.start()
+                print("  [准备] 状态小窗：" + ("已打开 ✓" if ok else "起不来（缺 tkinter）→ 继续无 GUI"))
+                if ok:
+                    time.sleep(0.6)   # 让窗口先落地；随后流程会把游戏切回前台（本窗口不抢焦点）
+            except Exception as exc:
+                print(f"  [i] GUI 跳过: {exc}")
+        try:
+            runner.run()
+        finally:
+            if gui is not None:
+                gui.close()
+            if ka is not None:
+                ka.stop()
     stack.capture.close()
+    if gui is not None:
+        # 【Tk 收尾·已知问题】线程里的 Tk 在解释器 finalize 阶段必报
+        # "Tcl_AsyncDelete: async handler deleted by the wrong thread"，还会把退出码弄成非 0。
+        # 此时所有清理都已完成（GUI 已 join、按键已释放、采集已关闭）→ 直接干净退出。
+        import os as _os
+        import sys as _sys
+        _sys.stdout.flush()
+        _sys.stderr.flush()
+        _os._exit(0)
     return 0
 
 
