@@ -25,7 +25,7 @@
 > Clash 在托盘里开着即可；不通时把这一项去掉再直连试试。
 
 ```bash
-cd C:/Users/lziha/visual_auto_toolkit
+cd <你的仓库目录>
 # 1) 网上建一个空仓库（不要勾 README），比如叫 vauto
 # 2) 关联并推（带代理）
 git remote add origin https://github.com/<你的用户名>/vauto.git
@@ -44,7 +44,7 @@ git -c http.proxy=http://127.0.0.1:7897 push -u origin master
 > 适合 github.com 页面/推送不通、但 api 通的环境。上传是逐文件调用，会慢一点。
 
 ```bash
-cd C:/Users/lziha/visual_auto_toolkit
+cd <你的仓库目录>
 TOKEN=<你的Token>          # 只在本次终端会话里用，别写进文件
 USER=<你的GitHub用户名>
 

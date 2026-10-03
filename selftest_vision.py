@@ -3,12 +3,13 @@
 用 golden_frames 真实帧 + templates/thresholds.json 的标定结果验证；
 全程不注入任何键鼠输入（StubCapture 只回放已有帧）。
 """
+import pathlib
 import json
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\lziha\visual_auto_toolkit")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # 谁的机器都能跑
 
 import numpy as np
 

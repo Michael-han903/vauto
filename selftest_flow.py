@@ -5,11 +5,15 @@
 ② 证明"光按 ↓ 会漏车"
 ③ 量出各按键策略在随机列表上的覆盖率（纯逻辑，不注入任何输入）
 """
+import os
+import pathlib
 import random
 import sys
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\lziha\visual_auto_toolkit")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # 谁的机器都能跑
+_ROOT = pathlib.Path(__file__).resolve().parent
+_HERMES_IMGS = pathlib.Path(os.environ.get("HERMES_HOME", ".")) / "images"
 
 from flow.nav import GridModel, GridWalker
 
@@ -157,7 +161,7 @@ print("\n⑥ 静态检查：runner.py 里按名字取判据的地方，名字都
 import re
 from flow.runner import DETECTORS, OPTIONAL_DETECTORS
 
-_src = Path(r"C:\Users\lziha\visual_auto_toolkit\flow\runner.py").read_text(encoding="utf-8")
+_src = Path(str(_ROOT) + r"\flow\runner.py").read_text(encoding="utf-8")
 _used = set()
 for _pat in (r'self\.s\.dets\["([a-z0-9_]+)"\]',
              r'self\.s\.dets\.get\("([a-z0-9_]+)"',
@@ -187,7 +191,7 @@ try:
     _cfg = RunConfig()
     _cfg.log_dir = tempfile.mkdtemp(prefix="vauto_selftest_")
     _r = Runner(build_offline_stack(), _cfg)
-    _p = sorted(_glob.glob(r"C:\Users\lziha\visual_auto_toolkit\golden_frames\current_car_22b_garage\*.png"))[0]
+    _p = sorted(_glob.glob(str(_ROOT) + r"\golden_frames\current_car_22b_garage\*.png"))[0]
     _im = _load_img(_p)
     _fp = _r._selected_tile_title(_im)
     ck("能在「我的车辆」里认出选中格的车名", _fp is not None,
@@ -208,7 +212,7 @@ try:
         ck("不同车：差异远大于阈值", min(_others.values()) > _cfg.fp_same_tol * 2,
            f"最小 {min(_others.values()):.2f}（{min(_others, key=_others.get)}）")
     # 录屏帧里也要认得出来（框必须完整才认，滚动中间态宁可不认）
-    _fs = sorted(_glob.glob(r"C:\Users\lziha\visual_auto_toolkit\golden_frames\garage_list\*.png"))
+    _fs = sorted(_glob.glob(str(_ROOT) + r"\golden_frames\garage_list\*.png"))
     _ok = sum(1 for _f in _fs[:12]
               if _r._selected_tile_title(_load_img(_f)) is not None)
     ck("录屏车库帧里也认得出选中格", _ok >= 6, f"{_ok}/12 帧")
@@ -219,7 +223,7 @@ print("\n⑧ 车格/♥ 检测：用用户实机截图验证（B 段选车靠它
 try:
     import os as _os
     import cv2 as _cv2
-    _IMG = r"C:\Users\lziha\AppData\Local\Hermes Agent CN Desktop\data\hermes-home\images\upload_20261003_002623_16.png"
+    _IMG = str(_HERMES_IMGS) + r"\upload_20261003_002623_16.png"
     _im2 = _cv2.imread(_IMG) if _os.path.isfile(_IMG) else None
     if _im2 is None:
         print("       跳过（找不到用户截图）")
@@ -259,7 +263,7 @@ except Exception as _e:
 print("\n⑨ 当前车辆（列表最左侧那格）必须被跳过")
 # 2026-10-03 用户指出："新的 b 阶段逻辑怎么会去研究当前车辆呢？最左侧的车是当前车辆"
 try:
-    _IMG3 = r"C:\Users\lziha\AppData\Local\Hermes Agent CN Desktop\data\hermes-home\images\upload_20261003_003624_18.png"
+    _IMG3 = str(_HERMES_IMGS) + r"\upload_20261003_003624_18.png"
     _im3 = _cv2.imread(_IMG3) if _os.path.isfile(_IMG3) else None
     if _im3 is None:
         print("       跳过（找不到用户截图）")
@@ -288,7 +292,7 @@ except Exception as _e:
 print()
 print("⑭ 当前车的 ♥ 判据：标准位 + 驾驶图标左侧位（用户 2026-10-03 指路）")
 try:
-    _IMG4 = ("C:/Users/lziha/AppData/Local/Hermes Agent CN Desktop/data/hermes-home/"
+    _IMG4 = (str(_HERMES_IMGS.parent) + "/"
              "images/upload_20261003_020318_24.png")
     _im4 = _cv2.imread(_IMG4) if _os.path.isfile(_IMG4) else None
     if _im4 is None:

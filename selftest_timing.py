@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """自检：timing.py 的纯函数与随机策略（只需要 numpy，可离线跑）"""
+import pathlib
 import math, random, threading, time, sys
-sys.path.insert(0, r"C:\Users\lziha\visual_auto_toolkit")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # 谁的机器都能跑
 from vauto.timing import TimingProfile, Humanizer, bezier_path, ease_curve, distribute_duration, interruptible_sleep
 
 fails = []
