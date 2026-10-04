@@ -632,6 +632,13 @@ class Runner:
             elif outcome == "timeout":
                 print("  [!] 本轮超时未见结算判据，继续等待下一轮")
                 settled += 1
+            elif outcome == "not_started":
+                # 【2026-10-04】一轮根本没开赛（画面静止 + 判出来人还在某个界面）。
+                # 以前这种情况会掉进 else 分支报"异常"，现在单列出来：**停下等人**，
+                # 因为继续跑只会在菜单里空按键。
+                print("  [!] 这一轮没真正开赛（还停在界面里）→ 停止 A 阶段，请看一下游戏画面")
+                self.log.event("phase_farm_stop", why="round_not_started")
+                break
             else:
                 self.stats["errors"] += 1
                 print(f"  [!] 本轮异常：{outcome}")
@@ -660,6 +667,19 @@ class Runner:
             self.log.event("round_active", ok=active)
             if not active:
                 print("  [!] 等了很久画面还是静止的 —— 可能卡在加载或某个等待输入的界面")
+                # 【2026-10-04 修·用户实测"卡在搜索面板却说已进赛事"】画面静止**不足以**判定
+                # 比赛已开始：搜索面板、各种菜单、加载过场**统统是静止的**。以前这里只打印一句
+                # 警告就继续按住 W → 用户看到的是"程序以为在比赛、其实卡在界面里空按"。
+                # 现在先问"我在哪一屏"：认出是菜单/面板 → **这一轮直接不跑**（一发键都不按）。
+                try:
+                    _st, _sc = self._where_am_i()
+                except Exception as exc:
+                    _st = f"probe_error:{str(exc)[:60]}"
+                self.log.event("round_active_state", state=_st)
+                if _st in self.KNOWN_STATES and _st != "world":
+                    print(f"  [!] 而且判出来现在还停在「{_st}」界面 → 这一轮不跑（怕在菜单里空按）")
+                    self.log.event("round_not_started", state=_st)
+                    return "not_started"
         # 2) 按住 W
         # 先松一次再按：保证这条 keydown 发生在加载**之后**（加载过程可能吞掉按键事件）
         self.release_all("比赛开始，准备按住 W")
@@ -1428,6 +1448,12 @@ class Runner:
         指纹仍然用于**跳过**（刚处理过的那台、走不到的），不用于认路。
         """
         self._last_walk_why = ""
+        # 【2026-10-04 修·用户实测"在两辆车之间上下横跳"】根因：下面每帧都用"离光标最近的
+        # 候选"重挑目标 —— 两张相邻候选会**轮流**变成"最近"，方向键就在 ↓/↑ 之间反复翻转，
+        # 光标在两台车之间来回跳（走 30 次也到不了）。现在：**一次走位只认一台**（锁住它的
+        # 像素框，不锁指纹 —— 同款同名车指纹一样，锁指纹会认错），除非它滚出视野才重挑。
+        locked = None                 # 锁定的目标框 (bx,by,bw,bh)
+        visited = []                  # 光标框历史（震荡保护用）
         for _ in range(self.cfg.grid_walk_max):
             self.s.stop.check()
             frame = self.frame()
@@ -1436,6 +1462,16 @@ class Runner:
             if cbox is None:
                 self._last_walk_why = "cursor_unknown"
                 self.log.event("grid_walk_fail", why="cursor_unknown")
+                return False
+
+            # 震荡保护：同一个光标框出现第 3 次 = 已经来回跳了，别再耗着（交给调用方换车）
+            _cb = tuple(int(v) for v in cbox)
+            visited.append(_cb)
+            if visited.count(_cb) >= 3:
+                shot = self._save_evidence(frame, "grid_walk_oscillate")
+                print(f"  [!] 光标在 {list(_cb)} 来回跳（{visited.count(_cb)} 次）→ 放弃这台  证据 {shot}")
+                self.log.event("grid_walk_fail", why="oscillate", cursor=list(_cb), shot=shot)
+                self._last_walk_why = "oscillate"
                 return False
 
             def _ov(a0, a1, b0, b1):
@@ -1448,9 +1484,11 @@ class Runner:
             for (r, c, bx, by, bw, bh, has, sc) in tiles:
                 if has:
                     continue
-                if self._is_current_car(frame, (r, c, bx, by, bw, bh, has, sc)):
-                    continue                 # 当前驾驶的车不当目的地（驾驶中图标）
-
+                # 【2026-10-04 修·与候选选择器对齐】以前这里把"当前驾驶的车"排除在目的地之外，
+                # 而上面的候选选择器（见 change_car 里那段注释）**保留**当前车当候选（未收藏的
+                # 当前车照样要解锁+加收藏）。一个选、一个不认 → 日志里 27 次
+                # `grid_target_unreachable`，每轮白等十几秒。现在两边口径一致：当前车也是
+                # 合法目的地（到站后由 _cursor_tile_binding / 身份判据处理它的特殊菜单）。
                 fp = self._title_crop(frame, bx, by, bw, bh)
                 if self._fp_seen(fp) or self._fp_matches(fp, self._unreachable):
                     continue
@@ -1467,23 +1505,27 @@ class Runner:
                 self._last_walk_why = "no_candidate"
                 self.log.event("grid_walk_stop", why="视野里没有可处理的车格")
                 return False
-            # ② 朝**最近的**候选走（用行列差选，方向稳，不会在同款同名车之间来回翻）
+            # ② 决定目的地：优先继续走**已锁定**的那台（框还在视野里就继续）
+            tgt = None
+            if locked is not None:
+                for v in valid:
+                    if (_ov(locked[0], locked[0] + locked[2], v[2], v[2] + v[4]) > 0.5
+                            and _ov(locked[1], locked[1] + locked[3], v[3], v[3] + v[5]) > 0.5):
+                        tgt = v
+                        break
+                if tgt is None:
+                    locked = None                    # 锁定的那台滚出视野了 → 重挑
             cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
-            def _cell_of_cursor():
-                best = None
-                for (r, c, bx, by, bw, bh, has, sc, fp) in valid:
-                    d = abs(bx - cbox[0]) + abs(by - cbox[1])
-                    if best is None or d < best[0]:
-                        best = (d, r, c, bx, by, bw, bh)
-                return best
-            cur_cell = None                  # 光标所在格的 (行,列)（从所有车格里找，不限于候选）
-            for (r, c, bx, by, bw, bh, has, sc) in tiles:
-                if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
-                        and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
-                    cur_cell = (r, c)
-                    break
-            tgt = min(valid, key=lambda v: (abs(v[0] - cur_cell[0]) + abs(v[1] - cur_cell[1])
-                                            if cur_cell else 0))
+            if tgt is None:
+                cur_cell = None                  # 光标所在格的 (行,列)（从所有车格里找，不限于候选）
+                for (r, c, bx, by, bw, bh, has, sc) in tiles:
+                    if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
+                            and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
+                        cur_cell = (r, c)
+                        break
+                tgt = min(valid, key=lambda v: (abs(v[0] - cur_cell[0]) + abs(v[1] - cur_cell[1])
+                                                if cur_cell else 0))
+                locked = tuple(tgt[2:6])         # 锁住这台，直到走到 / 滚出视野
             tx = tgt[2] + tgt[4] / 2.0
             ty = tgt[3] + tgt[5] / 2.0
             same_col = _ov(cbox[0], cbox[0] + cbox[2], tgt[2], tgt[2] + tgt[4]) > 0.5
@@ -1499,7 +1541,7 @@ class Runner:
             keys += [k for k in ("down", "up") if k not in keys]
             self.log.event("grid_walk_step", same_col=bool(same_col), same_row=bool(same_row),
                            keys=keys[:2], cursor=list(cbox), target=list(tgt[2:6]),
-                           cell=cur_cell, target_cell=[tgt[0], tgt[1]])
+                           locked=bool(locked), target_cell=[tgt[0], tgt[1]])
             progressed = False
             for key in keys[:max(1, tries_each)]:
                 self.press(key, f"走向待处理车格 {[tgt[0], tgt[1]]}")
@@ -2888,7 +2930,25 @@ class Runner:
         self._type_text(cfg.share_code, "输入共享代码")
         self.press(cfg.confirm_key, "确认代码文本")
         self.press("down", "移到「确认」")
+        self.sleep(0.35)      # 【2026-10-04】给游戏时间把高亮从输入框挪到「确认」（原来只隔 0.15s，太赶）
         self._do_step(lambda: self.press(cfg.confirm_key, "确认（执行搜索）"), "执行搜索")
+        # 【2026-10-04 修·用户实测"卡在搜索面板上、程序却说已进入赛事"】
+        # `_do_step` 的成功判据只是"画面变了" —— 按方向键/回车都会让高亮框闪一下，画面当然会变，
+        # 所以这一步**从来没有真正校验过搜索有没有执行**。现在用真判据复核：**搜索面板必须消失**。
+        # 没消失就再补一次 ↓+回车（最多 2 次）；还是不消失 → 存证据图 + 停下（绝不盲按）。
+        if not cfg.replay:
+            _gone = self._wait_gone("panel_search_title", 6.0)
+            for _try in range(2):
+                if _gone:
+                    break
+                print(f"  [!] 搜索面板还在（第 {_try + 1} 次重试：↓ 到「确认」再回车）")
+                self.log.event("search_retry", attempt=_try + 1)
+                self.press("down", "移到「确认」（重试）")
+                self.sleep(0.5)
+                self.press(cfg.confirm_key, "确认（执行搜索·重试）")
+                _gone = self._wait_gone("panel_search_title", 6.0)
+            if not _gone:
+                return self._enter_fail("search_not_executed")
         # 5) 等结果 → Enter 进挑战 → 等加载
         self.sleep(1.5 if self.cfg.replay else 2.5)
         self.press(cfg.confirm_key, "进入挑战（结果列表里第一张就是目标赛事）")
@@ -2896,6 +2956,10 @@ class Runner:
         if not self.cfg.replay:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
                         timeout=cfg.entry_load_timeout, settle=1.5, scale=0.5, poll=0.3)
+            # 【2026-10-04 修】"画面静止"**不能**当"进赛事成功"的证据（搜索面板/菜单也静止）。
+            # 收尾再判一次：还认得搜索面板 → 就是没进成，停下并留证据图。
+            if self._wait_for("panel_search_title", 2.0) is not None:
+                return self._enter_fail("entry_still_on_search_panel")
         print("  [进赛事] 加载结束 ✅")
         self.log.event("event_entered", shot=self._save_evidence(self.frame(), "event_entered"))
         self.stats["events_entered"] = self.stats.get("events_entered", 0) + 1

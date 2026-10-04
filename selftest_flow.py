@@ -905,5 +905,125 @@ try:
 except Exception as _e21:
     ck("比赛菜单自检可运行", False, repr(_e21))
 
+print("\n㉒ 【2026-10-04 晚新增】车库列表：当前车不能\"不算数\"、目标不能每帧重挑（用户实测两个坑）")
+# 用户当晚报的两个现象，都在这两张**真实现场帧**上复现过（帧已入库 golden_frames_min/garage_cursor，
+# 所以 CI / 别人 clone 上也能跑）：
+#   ① "一页全收藏的列表里在两辆车之间上下横跳" ② 当前车（未收藏）那格走不到 → 每轮白等十几秒
+# 帧来源：dist/vauto/logs/target_r0c0_20261004_230719.png（光标压着当前车那格、它没♥，
+#         同一页其余 7 格全有♥）与 target_r1c3_20261004_203100.png（光标在有♥的格上，
+#         两台待处理车在右下方）。
+try:
+    import numpy as _np22
+    import cv2 as _cv22
+    import json as _json22
+    from pathlib import Path as _P22
+    from flow.config import RunConfig as _RC22
+    from flow.runner import Runner as _R22, build_offline_stack as _BOS22
+
+    _root22 = _P22(__file__).resolve().parent
+
+    def _frame22(name):
+        """按名字找入库的真实现场帧（.png/.jpg 都认；优先完整素材目录）。"""
+        for base in ("golden_frames", "golden_frames_min"):
+            d = _root22 / base / "garage_cursor"
+            if not d.is_dir():
+                continue
+            for p in sorted(d.iterdir()):
+                if p.stem == name and p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                    return _cv22.imdecode(_np22.fromfile(str(p), dtype="uint8"), _cv22.IMREAD_COLOR)
+        return None
+
+    class _Cap22:
+        def __init__(self, imgs):
+            self.imgs, self.i = list(imgs), 0
+
+        def grab(self, region=None):
+            # 循环取帧（两张就 A,B,A,B…）—— 用来精确构造"光标在 A/B 之间来回跳"的场面
+            im = self.imgs[self.i % len(self.imgs)]
+            self.i += 1
+            return im
+
+    def _runner22(imgs, log_prefix="vauto_selftest22_"):
+        _cfg = _RC22()
+        _cfg.log_dir = tempfile.mkdtemp(prefix=log_prefix)
+        _cfg.dry_run = False          # 让按键走到假 sim（记录下来），方便断言
+        _cfg.grid_walk_max = 12
+        _st = _BOS22(capture=_Cap22(imgs))
+        return _R22(_st, _cfg), _st
+
+    _f_cur = _frame22("cur_on_current_car")
+    _f_right = _frame22("candidates_right")
+    ck("入库的车库现场帧可用（golden_frames_min/garage_cursor）",
+       _f_cur is not None and _f_right is not None,
+       f"cur={None if _f_cur is None else _f_cur.shape} right={None if _f_right is None else _f_right.shape}")
+
+    if _f_cur is not None:
+        _r22, _st22 = _runner22([_f_cur])
+        _tiles22 = _r22._grid_tiles(_f_cur)
+        _cbox22 = _r22._cursor_box(_f_cur, _tiles22)
+        _cur_tiles = [t for t in _tiles22 if _r22._is_current_car(_f_cur, t)]
+        _noheart = [t for t in _tiles22 if not t[6]]
+        print(f"    （现场帧：{len(_tiles22)} 格、没♥ {len(_noheart)} 格、"
+              f"其中当前车 {len(_cur_tiles)} 格；光标框 {_cbox22}）")
+        ck("现场帧上：唯一没♥的就是当前车那一格（=用户说的\"一页全收藏\"里剩的那台）",
+           len(_noheart) == 1 and len(_cur_tiles) == 1
+           and tuple(_noheart[0][:2]) == tuple(_cur_tiles[0][:2]),
+           f"没♥ {[list(t[:2]) for t in _noheart]} / 当前车 {[list(t[:2]) for t in _cur_tiles]}")
+        _st22.sim.held.clear()
+        _ok22 = _r22._walk_to_tile()
+        ck("★ 走位器认这台当前车（修前：把它排除 → \"视野里没有可处理的车格\" → 白等 13 秒 ×27 次）",
+           _ok22 is True and not _st22.sim.held,
+           f"返回 {_ok22}、按键 {_st22.sim.held}")
+        ck("★ 而且它就在光标下面 → 一发键都不用按（到站即停）",
+           _r22._last_walk_why == "",
+           f"理由 {_r22._last_walk_why!r}")
+
+    if _f_right is not None:
+        # 光标停在有♥的格上、候选在右下方 → 必须走动，但**必须有界**（不能无限横跳）
+        _r22b, _st22b = _runner22([_f_right])
+        _ok22b = _r22b._walk_to_tile()
+        _keys22b = [a[1] for a in _st22b.sim.held if a[0] == "tap"]
+        ck("静态画面下走不动时**有界退出**（不是一路按到底）",
+           _ok22b is False and len(_keys22b) <= 2,
+           f"返回 {_ok22b}、理由 {_r22b._last_walk_why!r}、按键 {_keys22b}")
+
+        # ★ 目标锁定 + 震荡保护（白盒）：把"光标框"换成受控序列 A,B,A,B…
+        #   真机帧凑不出"光标在两处来回跳"这个**动态过程**（我手上的现场帧光标都停在同一格），
+        #   所以这里直接给 `_cursor_box` 装一个受控序列，验证两条护栏：
+        #   ① 一次走位里**目标不重挑**（修前每帧重挑 → 两张候选轮流当"最近" → 上下横跳）
+        #   ② 同一个光标框出现第 3 次 → 判定为横跳、立即放弃（不再耗满 30 次）
+        _r22d, _st22d = _runner22([_f_right])
+        _real_tiles = _r22d._grid_tiles(_f_right)
+        _r22d._grid_tiles = lambda _fr: _real_tiles      # 车格固定（不随帧变）
+        _seq22 = [(816, 424, 648, 488), (1506, 424, 648, 488)]   # 都在有♥的格上（不是候选）
+        _box22 = {"i": 0}
+
+        def _fake_cursor(_fr, _tiles):
+            b = _seq22[_box22["i"] % 2]
+            _box22["i"] += 1
+            return b
+
+        _r22d._cursor_box = _fake_cursor
+        _ok22d = _r22d._walk_to_tile()
+        _steps22d = []
+        try:
+            with open(_r22d.log.path, encoding="utf-8") as _fh:
+                for _l in _fh:
+                    _row = _json22.loads(_l)
+                    if _row.get("kind") == "grid_walk_step":
+                        _steps22d.append(_row)
+        except Exception:
+            pass
+        _tgts22d = {tuple(s.get("target_cell") or ()) for s in _steps22d}
+        ck("★ 一次走位里目标**锁死不变**（修前每帧重挑 → 两张候选轮流当\"最近\" → 上下横跳）",
+           len(_steps22d) >= 2 and len(_tgts22d) == 1
+           and all(s.get("locked") for s in _steps22d[1:]),
+           f"走位步数 {len(_steps22d)}、出现过的目标 {_tgts22d}")
+        ck("★ 同一个光标框出现第 3 次 → 判定\"来回横跳\"并放弃（震荡保护）",
+           _ok22d is False and _r22d._last_walk_why == "oscillate",
+           f"返回 {_ok22d}、理由 {_r22d._last_walk_why!r}")
+except Exception as _e22:
+    ck("车库走位自检可运行", False, repr(_e22))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)
