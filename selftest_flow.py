@@ -1025,5 +1025,85 @@ try:
 except Exception as _e22:
     ck("车库走位自检可运行", False, repr(_e22))
 
+print("\n㉓ 【2026-10-04 晚新增】切回窗口 / W 掉了 → **重新按住 W**（用户实测报的问题）")
+# 用户原话："从其他窗口切回去之后没有重新按 w，这是为什么呢？"
+# 根因：游戏在失焦/暂停时会丢掉按键状态，而程序内部以为自己还按着（key_down 只在开始时发过一次）。
+try:
+    import json as _json23
+    import pathlib as _pl23
+    import numpy as _np23
+    import cv2 as _cv23
+    from flow.config import RunConfig as _RC23
+    from flow.runner import Runner as _R23, build_offline_stack as _BOS23
+
+    class _Cap23:
+        def __init__(self, imgs):
+            self.imgs, self.i = list(imgs), 0
+
+        def grab(self, region=None):
+            im = self.imgs[self.i % len(self.imgs)]
+            self.i += 1
+            return im
+
+    _img23 = None
+    for _base in ("golden_frames", "golden_frames_min"):
+        _d23 = _pl23.Path(__file__).resolve().parent / _base / "challenge_hud"
+        if not _d23.is_dir():
+            continue
+        for _p in sorted(_d23.iterdir()):
+            if _p.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                _img23 = _cv23.imdecode(_np23.fromfile(str(_p), dtype="uint8"), _cv23.IMREAD_COLOR)
+                break
+        if _img23 is not None:
+            break
+    ck("㉓ 用的静态帧可用", _img23 is not None, f"shape={None if _img23 is None else _img23.shape}")
+
+    if _img23 is not None:
+        # ① 焦点切回来 → 重新按住 W（直接走 _on_focus_gained 那条路）
+        _cfg23 = _RC23()
+        _cfg23.log_dir = tempfile.mkdtemp(prefix="vauto_selftest23a_")
+        _cfg23.dry_run = False
+        _cfg23.caps_lock_follow_focus = False     # 自检绝不能真的动系统大写锁定
+        _cfg23.park_on_focus_return = False       # 也不要真移鼠标
+        _cfg23.focus_resync = False               # 走"不做界面重判"那条分支（仍必须重按 W）
+        _st23 = _BOS23(capture=_Cap23([_img23]))
+        _r23 = _R23(_st23, _cfg23)
+        _st23.sim.held.clear()
+        _r23.hold("w", "模拟比赛进行中")
+        _r23._on_focus_gained()
+        _acts23 = list(_st23.sim.held)
+        _downs23 = [a for a in _acts23 if a[0] == "down"]
+        ck("★ 焦点切回游戏 → **重新按住 W**（修前：什么都不做，车就不动了）",
+           len(_downs23) >= 2 and _acts23[-1] == ("down", "w"),
+           f"动作 {_acts23}")
+        ck("先松开再按（保证是新的 keydown，游戏才认）",
+           any(a[0] == "release_all" for a in _acts23[1:]),
+           f"动作 {_acts23}")
+
+        # ② 比赛里画面长时间没变 → 自动补按 W（而不是干等看门狗 ~9 分钟）
+        _cfg23b = _RC23()
+        _cfg23b.log_dir = tempfile.mkdtemp(prefix="vauto_selftest23b_")
+        _cfg23b.dry_run = False
+        _cfg23b.race_rehold_after = 0.4
+        _cfg23b.round_minutes = 0
+        _cfg23b.round_timeout = 1.5
+        _cfg23b.round_settle_before = 0.2
+        _cfg23b.round_active_wait = 0.2
+        _cfg23b.poll = 0.05
+        _cfg23b.watchdog_idle = 0
+        _cfg23b.max_polls_per_round = 40
+        _cfg23b.caps_lock_follow_focus = False
+        _st23b = _BOS23(capture=_Cap23([_img23]))      # 永远静止的画面
+        _r23b = _R23(_st23b, _cfg23b)
+        _r23b._where_am_i = lambda *a, **k: ("world", {})   # 让这一轮真的跑起来
+        _r23b.farm_one_round(retry=False)
+        _rows23b = [_json23.loads(_l) for _l in
+                    open(_r23b.log.path, encoding="utf-8") if _l.strip()]
+        ck("★ 比赛里画面静止 → 自动补按 W（不再干等看门狗）",
+           any(r.get("kind") == "rehold" for r in _rows23b),
+           f"事件 {[r.get('kind') for r in _rows23b][-8:]}")
+except Exception as _e23:
+    ck("rehold 自检可运行", False, repr(_e23))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

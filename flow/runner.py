@@ -239,6 +239,9 @@ class Runner:
         # 【2026-10-04 用户要求】焦点进出挂钩：切出去关 CapsLock、切回来开回来 + 鼠标归位 +
         # 重新认界面。装配在这里（而不是 build_stack 里）是因为回调要用 Runner 自己的状态机。
         self._focus_lost_at = 0.0
+        # 【2026-10-04 晚·用户实测"从其他窗口切回去之后没有重新按 W"】记住当前按着的键，
+        # 供"焦点切回来"和"画面长时间静止"两条自愈路重新按住它（见 _rehold_if_needed）。
+        self._held_key: Optional[str] = None
         g = getattr(self.s, "guard", None)
         if g is not None and hasattr(g, "on_lose_focus"):
             g.on_lose_focus = self._on_focus_lost
@@ -372,6 +375,10 @@ class Runner:
     def hold(self, key: str, note: str = "") -> None:
         self.s.stop.check()
         self.log.event("hold", key=key, note=note, dry=self.cfg.dry_run)
+        # 【2026-10-04 晚】记住"现在按着哪个键" —— 用户实测："从其他窗口切回去之后没有重新按 W"。
+        # 原因：游戏在失焦时会丢掉按键状态，而程序以为自己还按着 → 车不动。有了这个标记，
+        # 焦点回来（`_on_focus_gained`）和"画面长时间静止"（轮询里的自愈）都能重新按住它。
+        self._held_key = key
         if self.cfg.dry_run:
             print(f"  [dry-run] 本应按住 {key!r} 不放  ({note})")
             return
@@ -379,10 +386,28 @@ class Runner:
 
     def release_all(self, note: str = "") -> None:
         self.log.event("release_all", note=note, dry=self.cfg.dry_run)
+        self._held_key = None
         if self.cfg.dry_run:
             print(f"  [dry-run] 本应松开所有键  ({note})")
             return
         self.s.sim.release_all(quiet=True)
+
+    def _rehold_if_needed(self, why: str) -> bool:
+        """"该按着但游戏那边其实没按着"时，重新按住一次（先松再按，保证是新的 keydown）。
+
+        【2026-10-04 晚·用户实测】"从其他窗口切回去之后没有重新按 W" ——
+        游戏在失焦/暂停时会丢掉按键状态，而程序内部以为自己还按着（key_down 只在开始时发过一次）。
+        这里统一处理两条路：① 焦点切回来 ② 比赛里画面长时间静止（多半就是 W 掉了）。
+        返回 True = 确实重按了。
+        """
+        k = getattr(self, "_held_key", None)
+        if not k or self.cfg.replay or self.cfg.dry_run:
+            return False
+        self.release_all(f"{why}：先松开")
+        self.hold(k, f"{why} → 重新按住（失焦/暂停会把按键状态丢掉）")
+        self.log.event("rehold", key=k, why=why)
+        print(f"  [焦点] {why} → 重新按住 {k.upper()}（回来继续开）")
+        return True
 
     def click_client(self, xy, note: str = "") -> None:
         """点客户区坐标（会自动换算成屏幕坐标）。点完**把鼠标移回左上角**（见 _park_pointer）。"""
@@ -479,13 +504,20 @@ class Runner:
         print(f"  [焦点] 回到游戏（离开 {_away:.1f}s）→ 大写锁定 {'开' if _cap else '关'}、"
               f"鼠标已归位、当前界面「{_state}」")
         if _state in ("skipped",) or not bool(getattr(self.cfg, "focus_resync", True)):
+            # 就算没开"重新判界面"，也要**重新按住该按的键**（用户实测：切回来没重新按 W）
+            self._rehold_if_needed("切回游戏")
             return
         if not bool(getattr(self.cfg, "auto_recover", True)):
+            self._rehold_if_needed("切回游戏")
             return
         # 只在"确实认出了有东西挡路"时清一次（rounds=1）；认不出/主世界/各页面一律不动手，
         # 交给状态机自己按原逻辑走（它本来就会按 Esc 回主菜单）。
         if _state not in self.KNOWN_STATES:
             self.recover_to_known("焦点回来后发现界面挡路", rounds=1)
+        # 【2026-10-04 晚·用户实测"切回去之后没有重新按 W"】最后一步：如果本来该按着某个键
+        # （比赛里按着 W），回来时必须**重新按一次** —— 游戏失焦时会把按键状态丢掉，
+        # 而程序内部以为自己还按着（key_down 只在开始时发过一次）→ 车就不动了。
+        self._rehold_if_needed("切回游戏")
 
     def _resume_if_event_menu(self, frame=None, hold_key_after: bool = False) -> bool:
         """比赛进行中检测到「重新开始赛事 / 退出赛事」菜单 → 按返回键回到比赛。
@@ -688,6 +720,7 @@ class Runner:
         polls, settle_hit = 0, None
         last_frame, last_change, idle_warns = None, time.monotonic(), 0
         _menu_resumes = 0          # 这一轮里"从比赛菜单返回比赛"按了几次（防刷键）
+        _reholds = 0               # 这一轮里"重新按住 W"补按了几次（防在真静止场景刷键）
         while polls < self.cfg.max_polls_per_round:
             polls += 1
             try:
@@ -709,22 +742,33 @@ class Runner:
             if ha or hb:
                 settle_hit = ha or hb
                 break
+            # 【2026-10-04 晚】把"画面有没有变"的判定抽出来给两块共用（自愈 + 看门狗），
+            # 否则看门狗关掉时 last_frame 永远是 None，"补按 W"也跟着失效。
+            if last_frame is None or mean_abs_diff(last_frame, frame, gray=True) > 2.0:
+                last_frame, last_change, idle_warns = frame, time.monotonic(), 0
+            idle_for = time.monotonic() - last_change
+            # 自愈：比赛里画面长时间不变，多半就是"游戏那边其实没按着 W"（失焦/暂停会把按键状态
+            # 丢掉，而程序内部以为自己还按着）→ 先重新按一次，而不是干等看门狗（原来 180s×3≈9 分钟）。
+            # 每轮最多 3 次；按完把计时清零重新观察（真按上了画面马上会动）。
+            _rehold_after = float(getattr(self.cfg, "race_rehold_after", 12.0))
+            if (self._held_key and not self.cfg.replay and _rehold_after > 0
+                    and _reholds < 3 and idle_for > _rehold_after):
+                _reholds += 1
+                self._rehold_if_needed(f"比赛里画面 {_rehold_after:.0f}s 没变（W 可能掉了）")
+                last_frame, last_change = None, time.monotonic()
             # 卡死看门狗：画面 180s 没变告警一次；累计 3 次（约 9 分钟）→ 存证据 + 中止本轮
             # 注意：这与「加载期没命中任何判据」是两码事 —— 加载时画面在变，不会触发这里。
-            if self.cfg.watchdog_idle > 0 and not self.cfg.replay:
-                if last_frame is None or mean_abs_diff(last_frame, frame, gray=True) > 2.0:
-                    last_frame, last_change, idle_warns = frame, time.monotonic(), 0
-                elif time.monotonic() - last_change > self.cfg.watchdog_idle:
-                    idle_warns += 1
-                    shot = self._save_evidence(frame, f"watchdog{idle_warns}")
-                    self.log.event("watchdog_idle", count=idle_warns, shot=shot)
-                    print(f"  [!] 画面已 {self.cfg.watchdog_idle:.0f}s 无变化"
-                          f"（第 {idle_warns}/3 次）证据: {shot}")
-                    if idle_warns >= 3:
-                        self.log.event("watchdog_abort", shot=shot)
-                        self.release_all("卡死中止")      # 必须先松手再返回：否则 W 会一直按着
-                        return "watchdog"
-                    last_change = time.monotonic()
+            if self.cfg.watchdog_idle > 0 and not self.cfg.replay and idle_for > self.cfg.watchdog_idle:
+                idle_warns += 1
+                shot = self._save_evidence(frame, f"watchdog{idle_warns}")
+                self.log.event("watchdog_idle", count=idle_warns, shot=shot)
+                print(f"  [!] 画面已 {self.cfg.watchdog_idle:.0f}s 无变化"
+                      f"（第 {idle_warns}/3 次）证据: {shot}")
+                if idle_warns >= 3:
+                    self.log.event("watchdog_abort", shot=shot)
+                    self.release_all("卡死中止")      # 必须先松手再返回：否则 W 会一直按着
+                    return "watchdog"
+                last_change = time.monotonic()
             self.sleep(self.cfg.poll)
         # 4) 松手（一定要先松，避免 W 和 Esc 同时按着）
         self.release_all("结算出现" if settle_hit else "轮询结束")

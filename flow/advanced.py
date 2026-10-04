@@ -49,6 +49,7 @@ CN = {
     "caps_lock_follow_focus": "切出游戏关大写/切回自动开",
     "event_menu_resume_key": "比赛菜单里回比赛的键(默认Esc)",
     "event_menu_auto_resume": "比赛里认到菜单就自动回比赛",
+    "race_rehold_after": "比赛画面静止多少秒后补按一次 W(0=关)",
     "caps_off_on_exit": "退出程序时关掉大写锁定",
     "park_on_focus_return": "切回来先把鼠标归位",
     "focus_resync": "切回来重新判一次当前界面",

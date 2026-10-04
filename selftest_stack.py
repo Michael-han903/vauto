@@ -129,7 +129,12 @@ print("== 3) focus: 窗口枚举 / 前台判定 / 行矩形 ==")
 wins = list_windows()
 ck("枚举到可见窗口", len(wins) > 0, f"count={len(wins)}")
 hwnd, title, cls = wins[0]
-ck("前台窗口被 is_foreground 判定为真", is_foreground(hwnd), f"hwnd={hwnd} title={title[:30]!r}")
+# 【2026-10-04 修】原来断言 wins[0] 就是前台窗口 —— 枚举顺序本来就不保证（换个窗口顺序
+# 就假失败，例如 Hermes 自己在前台时）。改成直接问系统"当前前台窗口是谁"再断言。
+import ctypes as _ct
+_fg = int(_ct.windll.user32.GetForegroundWindow() or 0)
+ck("前台窗口被 is_foreground 判定为真", _fg != 0 and is_foreground(_fg),
+   f"fg={_fg} title={(title[:30] if _fg else '')!r}")
 ck("is_foreground 对伪造 hwnd 返回 False", not is_foreground(0xDEADBEEF))
 ck("get_window_pid 合理", get_window_pid(hwnd) > 0, f"pid={get_window_pid(hwnd)}")
 ck("前台窗口与自身进程 PID 可读", get_window_pid(hwnd) != 0)
