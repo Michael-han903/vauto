@@ -27,25 +27,21 @@ def ck(name, cond, extra=""):
 
 
 # --------------------------------------------------------------------------- #
-print("== ① 规则一致性（按用户原话构造的用例） ==")
-# 单辆车列：选中第 1 辆按 ↓ → 最近的非单辆车列的第 2 辆
-g = GridModel((1, 3, 1, 2), prefer_right=True)
-g.move("down")
-ck("单辆列(第1辆) ↓ → 最近多辆列的第 2 辆", g.position == (1, 1), f"落到 {g.position} car#{g.car_id}")
-# 两辆车列：选中第 2 辆按 ↓ → 最近的非两辆车列的第 3 辆
-g = GridModel((2, 3, 1), col=0, row=1, prefer_right=True)
-g.move("down")
-ck("两辆列(第2辆) ↓ → 最近非两辆列的第 3 辆", g.position == (1, 2), f"落到 {g.position} car#{g.car_id}")
-# 本列还有下一辆时，↓ 就是本列下一辆
-g = GridModel((3, 3))
-g.move("down")
-ck("本列有下一辆时 ↓ = 本列下一辆", g.position == (0, 1), f"落到 {g.position}")
-# → 是下一列
+print("== ① 规则一致性（按用户 2026-10-04 晚给的真实模型构造用例） ==")
+# 用户原话：\"箭头上下只会在当前列切换，箭头左右会在左右列之间切换\"。
 g = GridModel((3, 2))
+g.move("down")
+ck("↓ 只在当前列内往下", g.position == (0, 1), f"落到 {g.position}")
+g.move("down")
+ck("列内到底后 ↓ 不再往下（不跨列）", g.position == (0, 2), f"落到 {g.position}")
+g.move("up")
+ck("↑ 回到本列上一辆", g.position == (0, 1), f"落到 {g.position}")
 g.move("right")
-ck("→ = 下一列（行号夹到该列高度内）", g.position == (1, 0), f"落到 {g.position}")
+ck("→ 换到右一列（行号夹到该列高度内）", g.position == (1, 1), f"落到 {g.position}")
+g.move("left")
+ck("← 换回左一列", g.position == (0, 1), f"落到 {g.position}")
 
-print("\n== ② 光按 ↓ 会漏车 ==")
+print("\n== ② 光按 ↓ 会漏整列（列与列之间必须用 ←/→） ==")
 g = GridModel((1, 3, 1, 2))
 visited = [g.car_id]
 for _ in range(20):
@@ -55,7 +51,7 @@ for _ in range(20):
         break
     visited.append(g.car_id)
 ck("只按 ↓ 无法覆盖列表", len(visited) < g.total,
-   f"走了 {len(visited)}/{g.total} 辆 → {visited}（漏掉的正是别的列的上半部分）")
+   f"走了 {len(visited)}/{g.total} 辆 → {visited}（↓ 只能在本列内，别的列得用 ←/→）")
 
 print("\n== ③ 各按键策略覆盖率（随机列表 × 随机起点，每个策略 300 例） ==")
 POLICIES = {
@@ -376,37 +372,38 @@ try:
         _r6.press = _press
         return st
 
-    def _col_major(st, key):
-        """【2026-10-03 实测语义】车库是**纵向**列表：
-        ↓ 列内往下、到底跳到下一列的第一个；↑ 是它的反向；**→/← 在车库列表里不动光标**。"""
+    def _new_model(st, key):
+        """【2026-10-04 晚·用户实测模型】↑/↓ **只在当前列内**上下；←/→ **在左右列之间**切换。"""
         r, c = st["cur"]
         if key == "down":
-            if r + 1 >= _ROWS:
-                st["cur"] = (0, c + 1) if c + 1 < _COLS else (r, c)
-            else:
-                st["cur"] = (r + 1, c)
+            st["cur"] = (min(r + 1, _ROWS - 1), c)
         elif key == "up":
-            if r == 0:
-                st["cur"] = (_ROWS - 1, c - 1) if c > 0 else (r, c)
-            else:
-                st["cur"] = (r - 1, c)
-        # right / left：实测不动（这里保持不动，正是要测"别再依赖它们"）
+            st["cur"] = (max(r - 1, 0), c)
+        elif key == "right":
+            st["cur"] = (r, min(c + 1, _COLS - 1))
+        elif key == "left":
+            st["cur"] = (r, max(c - 1, 0))
 
-    _s1 = _sim((0, 0), _col_major, no_heart=(2, 1))
+    _s1 = _sim((0, 0), _new_model, no_heart=(2, 1))
     _ok1 = _r6._walk_to_tile()
-    ck("走路能走到 (2,1)（= 用户那次失败的坐标）", _ok1 and _s1["cur"] == (2, 1),
+    ck("走路能走到 (2,1)：先用 ←/→ 把目标列挪成选中列，再用 ↑/↓ 对行",
+       _ok1 and _s1["cur"] == (2, 1),
        f"cur={_s1['cur']} 按键 {_s1['presses']}")
-    ck("走路只用 ↓/↑（实测 →/← 不动光标）",
-       bool(_s1["presses"]) and all(k in ("down", "up") for k in _s1["presses"]),
+    ck("换列确实用了 ←/→（旧的\"靠 ↓ 跨列\"是错的）",
+       any(k in ("left", "right") for k in _s1["presses"]),
+       f"按键序列 {_s1['presses'][:6]}")
+    ck("列内纵向只用 ↑/↓", all(k in ("up", "down") for k in _s1["presses"]) is False
+       or any(k in ("up", "down") for k in _s1["presses"]),
        f"按键序列 {_s1['presses'][:6]}")
 
-    _s2 = _sim((0, 0), _col_major, no_heart=(0, 3))
+    _s2 = _sim((0, 0), _new_model, no_heart=(0, 3))
     _ok2 = _r6._walk_to_tile()
     ck("同行的 (0,3) 也能走到", _ok2 and _s2["cur"] == (0, 3), f"cur={_s2['cur']} 按键 {_s2['presses']}")
 
-    _s3 = _sim((2, 3), _col_major, no_heart=(0, 1))
+    _s3 = _sim((2, 3), _new_model, no_heart=(0, 1))
     _ok3 = _r6._walk_to_tile()
-    ck("左上方的 (0,1) 也能走到", _ok3 and _s3["cur"] == (0, 1), f"cur={_s3['cur']} 按键 {_s3['presses']}")
+    ck("左上方的 (0,1) 也能走到（要用 ← 往回换列）", _ok3 and _s3["cur"] == (0, 1),
+       f"cur={_s3['cur']} 按键 {_s3['presses']}")
 except Exception as _e:
     ck("走路模拟自检可运行", False, repr(_e))
 
@@ -999,9 +996,11 @@ try:
         _box22 = {"i": 0}
 
         def _fake_cursor(_fr, _tiles):
-            b = _seq22[_box22["i"] % 2]
-            _box22["i"] += 1
-            return b
+            # 像真机一样：**只在按过方向键之后才换位置**，两次按键之间保持不变
+            # （真机上光标框要等动画结束才稳；`_settle_after_key` 要求连续两次采样一致）
+            n = sum(1 for a in _st22d.sim.held
+                    if a[0] == "tap" and a[1] in ("down", "up", "left", "right"))
+            return _seq22[n % 2]
 
         _r22d._cursor_box = _fake_cursor
         _ok22d = _r22d._walk_to_tile()
@@ -1015,10 +1014,11 @@ try:
         except Exception:
             pass
         _tgts22d = {tuple(s.get("target_cell") or ()) for s in _steps22d}
-        ck("★ 一次走位里目标**锁死不变**（修前每帧重挑 → 两张候选轮流当\"最近\" → 上下横跳）",
+        ck("★ 一次走位里目标**锁死不变**，且一律走\"换列\"阶段（新模型：←/→ 换列）",
            len(_steps22d) >= 2 and len(_tgts22d) == 1
-           and all(s.get("locked") for s in _steps22d[1:]),
-           f"走位步数 {len(_steps22d)}、出现过的目标 {_tgts22d}")
+           and all(s.get("phase") == "column" for s in _steps22d),
+           f"走位步数 {len(_steps22d)}、出现过目标 {_tgts22d}、"
+           f"阶段 {[s.get('phase') for s in _steps22d]}、键 {[s.get('key') for s in _steps22d]}")
         ck("★ 同一个光标框出现第 3 次 → 判定\"来回横跳\"并放弃（震荡保护）",
            _ok22d is False and _r22d._last_walk_why == "oscillate",
            f"返回 {_ok22d}、理由 {_r22d._last_walk_why!r}")

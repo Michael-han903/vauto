@@ -12,32 +12,34 @@ flow.nav —— 「更换车辆」列表的走格子策略（业务层，刻意�
 网络通信、加解密、绕过检测等任何侵入式能力。请勿在其上添加此类功能。
 ======================================================================
 
-用户实测的列表导航规则（2026-10-02，地平线 6 车库「更换车辆」/「我的车辆」）
+用户实测的列表导航规则（**2026-10-04 晚更新，覆盖 2026-10-02 的旧描述**）
 ----------------------------------------------------------------------
-1. **列优先填充**：车辆按列从上往下排满一列，再排下一列；列高不固定。
-2. `↓` = 本列下一辆。
-3. `→` = 下一列。
-4. 列走到底还按 `↓`，游戏会**跳到附近最近的非该高度列**的「第 (行号+1) 辆」：
-   - 单辆车的列（选中第 1 辆）按 `↓` → 跳到最近的非单辆车列的**第 2 辆**；
-   - 两辆车的列（选中第 2 辆）按 `↓` → 跳到最近的非两辆车列的**第 3 辆**。
+用户原话：「在列表里面的时候，箭头上下只会在当前列切换，箭头左右会在左右列之间切换，
+          所以你要重新写一下找车的逻辑，抛弃掉鼠标，只用方向键找车，先保持选中框在最上
+          一行，然后逐列移动，观察到屏幕内出现未收藏车辆时先通过方向左右键将其所在列移动
+          到第一列，然后按情况使用上下方向键，当选择框在目标车辆上时，按回车即可选择操作」
+
+1. 车辆按列从上往下排满一列再排下一列；列高不固定。
+2. `↑/↓` = **只在当前列内**上下切换（**不会**跨列）。
+3. `←/→` = **在左右列之间**切换。被选中的那一列**永远画在最左边** ——
+   所以光标框的 x 一直固定在 ~816（30+ 张现场帧均如此），这一点是理解旧 bug 的关键。
+4. 到站判定：选择框压在目标车辆那一格 → 按回车 =「选择操作」。
+
+⚠️ 2026-10-02 那版旧描述（"↓ 到底会跳到最近的非该高度列的下一辆"、"→/← 不动光标"）
+   已被上面的实测**推翻**。旧描述是 `_walk_to_tile` 里"按行列像素差推方向"的依据，
+   也是历史上多次"在两辆车之间上下横跳"的根因来源。
 
 由此得到的关键结论
 ------------------
-**光按 `↓` 会漏车**（上例里第 2 列的第 1 辆就被跳过了）。
-而且程序看得到的只有「车名区域像素」，看不到光标在第几列第几行，
-所以**无法事先算出该按 `↓` 还是 `→`**。
+**只有 ↓/↑ 会漏整列**（列与列之间必须用 ←/→），所以找车 = 逐列移动 + 列内上下，
+而不是"猛按 ↓ 期望它跨列"。程序看得到车格与光标框的像素位置，因此**可以**算出该按哪个键：
 
-因此本模块采取的策略是「不假设列高，每步都验证」：
+    ① 光标框 x ≠ 目标框 x → 按 ←/→（把目标那一列挪成"选中列"）
+    ② x 相同 → 按 ↑/↓ 把选择框对到目标那一行
+    ③ 每一步都等列表稳定后重新看图确认（选择光标有 ~2 秒动画，动画中间读帧必错）
 
-    step():
-      ① 按 ↓  → 车名区域变了？ 成功，返回 True
-      ② 没变  → 按 →  → 变了？ 成功，返回 True
-      ③ 都没变 → 再试一次 ①②（列跳转有时要二次触发）
-      ④ 连续 max_fail 步都换不动 → 返回 False（认为到了列表边界）
-
-配合「已解锁的车直接跳过」（见 flow/states 里的判据 `hint_unlock_all`），
-即使偶尔回到做过的车也是无副作用的重访 —— 真正的 B 轮退出条件是**技能点不足弹窗**，
-不是"把列表走完"，所以不需要一次遍历 100% 覆盖。
+`GridWalker` 是旧模型下的"逐步试探"兜底器，现在只被 `change_car_legacy`（遗留路径）使用；
+新的找车逻辑在 `Runner._walk_to_tile`。
 """
 
 from __future__ import annotations
@@ -48,7 +50,8 @@ from typing import Callable, List, Optional, Sequence, Tuple
 __all__ = ["GridModel", "GridWalker"]
 
 # 一个「走一步」的按键尝试序列（按顺序试，谁先让车变了就用谁）
-DEFAULT_KEY_PLAN: Tuple[Tuple[str, ...], ...] = (("down",), ("right",), ("down", "right"))
+# 【2026-10-04 晚】按用户给的真实模型改：列内只能 ↑/↓、换列必须 ←/→。
+DEFAULT_KEY_PLAN: Tuple[Tuple[str, ...], ...] = (("down",), ("right",), ("up",), ("left",))
 
 
 # --------------------------------------------------------------------------- #
@@ -57,11 +60,12 @@ DEFAULT_KEY_PLAN: Tuple[Tuple[str, ...], ...] = (("down",), ("right",), ("down",
 @dataclass
 class GridModel:
     """
-    列优先、列高可变的列表模型，实现上面第 2~4 条规则。纯逻辑，不碰输入。
+    列优先、列高可变的列表模型。**2026-10-04 晚按用户实测改**：
+      * ↑/↓ 只在当前列内上下（不会跨列）；
+      * ←/→ 在左右列之间切换（行号夹到该列高度内）。
 
     heights      各列的车辆数，例如 (1, 3, 1, 2)
-    prefer_right 列到底跳转时，左右距离相同的情况下选哪边（游戏里未实测，默认右）
-    clamp_right  按 → 到下一列时，若该列没有当前行号的车，是否夹到该列最后一辆
+    clamp_right  ←/→ 到目标列时，若该列没有当前行号的车，是否夹到该列最后一辆
     """
 
     heights: Sequence[int]
@@ -119,31 +123,18 @@ class GridModel:
         raise ValueError(f"不支持的键: {key!r}")
 
     def _down(self) -> bool:
-        h = self.heights[self.col]
-        if self.row + 1 < h:                      # 本列还有下一辆
+        """↓：**只在当前列内**往下。到底了就停（2026-10-04 用户实测：不会跨列）。"""
+        if self.row + 1 < self.heights[self.col]:
             self.row += 1
             return True
-        target_row = self.row + 1                 # 列到底：跳到最近的非该高度列
-        cands = [c for c, hh in enumerate(self.heights) if hh > target_row and c != self.col]
-        if not cands:
-            return False
-        cands.sort(key=lambda c: (abs(c - self.col), c if self.prefer_right else -c))
-        self.col, self.row = cands[0], target_row
-        return True
+        return False
 
     def _up(self) -> bool:
+        """↑：**只在当前列内**往上。到顶了就停（同上）。"""
         if self.row - 1 >= 0:
             self.row -= 1
             return True
-        target_row = self.row - 1
-        if target_row < 0:
-            return False
-        cands = [c for c, hh in enumerate(self.heights) if c != self.col]
-        if not cands:
-            return False
-        cands.sort(key=lambda c: (abs(c - self.col), c if self.prefer_right else -c))
-        self.col, self.row = cands[0], target_row
-        return True
+        return False
 
     def _side(self, step: int) -> bool:
         target = self.col + step

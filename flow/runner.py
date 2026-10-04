@@ -1413,6 +1413,45 @@ class Runner:
             self.sleep(0.35)
         return False
 
+    def _settle_after_key(self, timeout: float = 3.0, need: int = 2,
+                          poll: float = 0.25):
+        """按完方向键后，等列表**真正稳下来**再判 —— 返回 (frame, tiles, cursor_box)。
+
+        【2026-10-04 晚·真机采样得到的根因】游戏的选择光标有 **~2 秒动画**。按键之后每 0.2s
+        采一次，看到的是：
+
+            +0.0s 框=(816,424)  ♥=0.568      静止
+            +0.9s 框=None                     ← 光标框"消失"（动画中）
+            +1.4s 框=(1117,424) ♥=0.986       ← 正滑动，♥ 读数被带成"有♥"（假读数！）
+            +1.8s 框=(1215,424) ♥=0.556
+            +2.2s 框=(816,424)  ♥=0.564       ← 稳定
+
+        而走位器原来只等 press 的 0.15s + grid_walk_dwell 0.45s = **0.6 秒**就判断"光标没动"
+        → 于是按反向键 → 光标被拽回去 → 用户看到的就是**在两辆车之间上下横跳**；
+        扫描器同样在动画中间读帧 → 候选列表时有时无（日志里 22 次 `todo=0` 多半就是这个）。
+
+        判稳标准：连续 `need` 次采样**完全相同**（光标框 + 每一格"有没有♥"）。
+        **任何"按键之后"的判据都要走这里**，不要直接用固定 sleep。
+        """
+        last_sig, same = None, 0
+        frame, tiles, box = self.frame(), None, None
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            frame = self.frame()
+            tiles = self._grid_tiles(frame)
+            box = self._cursor_box(frame, tiles)
+            sig = (None if box is None else tuple(int(v) for v in box),
+                   tuple((int(t[2]), int(t[3]), bool(t[6])) for t in tiles))
+            if sig == last_sig:
+                same += 1
+                if same >= need:
+                    return frame, tiles, box
+            else:
+                same = 0
+                last_sig = sig
+            self.sleep(poll)
+        return frame, (tiles if tiles is not None else []), box
+
     def _cursor_cell(self, frame, tiles):
         """光标（黄色高亮框）现在在哪个车格 → (row, col)；认不出返回 None。"""
         box = self._cursor_box(frame, tiles)
@@ -1434,25 +1473,28 @@ class Runner:
             return None
 
     def _walk_to_tile(self, target_fp=None, tries_each: int = 2) -> bool:
-        """朝"视野里最近的一台**可处理**的车"走；**光标压到任何一台可处理的车就停**。
+        """把选择框挪到目标车格上 —— 按**用户 2026-10-04 晚给的真实操作模型**重写。
 
-        【2026-10-03 用户实测，两次推翻前两版】
-        * 第一版按 (行,列) 号走 → 部分露出的车格时有时无、滚动后行列号失效；
-        * 第二版按"目标指纹"走 → 车库里有多台**同款同名**车（都是 2019 DEBERTI
-          SUPER DUTY F-250），指纹一模一样 → 目标在它们之间来回认错 → 用户看到
-          "反复在这一台和上面一台之间来回横跳"。
-        结论：**走路这一步不能依赖指纹去"认目标"**。现在只用两个不依赖指纹的量：
-        * 候选 = 视野里 ♥ 分数低于阈值、且没被跳过/标记的车格（就是 _grid_tiles 的结果）；
-        * 方向 = 光标框与"最近候选"框的像素偏移（纵向：↓/↑；实测 →/← 在车库列表里不动）；
-        一落到候选格上就返回（因为我们一直朝最近的候选走，停下的正是最左最上的那台）。
-        指纹仍然用于**跳过**（刚处理过的那台、走不到的），不用于认路。
+        用户原话：
+          「在列表里面的时候，箭头上下只会在当前列切换，箭头左右会在左右列之间切换，
+            所以你要重新写一下找车的逻辑，抛弃掉鼠标，只用方向键找车，先保持选中框在最上
+            一行，然后逐列移动，观察到屏幕内出现未收藏车辆时先通过方向左右键将其所在列移动
+            到第一列，然后按情况使用上下方向键，当选择框在目标车辆上时，按回车即可选择操作」
+
+        这个模型也解释了以前所有"横跳"观测：
+          * `↑/↓` **只在当前列内**上下切换（不会跨列）；
+          * `←/→` **在左右列之间**切换；
+          * 被选中的那一列**永远画在最左边** → 所以光标框的 x 一直固定在 816 附近
+            （翻遍 30+ 张现场帧都是如此）→ 旧代码"按行/列像素差推方向"必然在两台车之间横跳。
+
+        走位三步：
+          ① 光标框 x 与目标框 x 不同 → 按 ←/→ 把目标那一列"挪成选中列"（每按一次近一列）
+          ② x 对上 → 按 ↑/↓ 把选择框对到目标那一行
+          ③ 光标框压住目标格 = 到站（调用方接着按回车 =「选择操作」）
+        每一步都等列表**稳定**（`_settle_after_key`）后重新看图确认；走不动/来回跳都有护栏。
+        指纹只用于"跳过刚处理过的 / 走不到的"，不用于认路（同款同名车指纹相同）。
         """
         self._last_walk_why = ""
-        # 【2026-10-04 修·用户实测"在两辆车之间上下横跳"】根因：下面每帧都用"离光标最近的
-        # 候选"重挑目标 —— 两张相邻候选会**轮流**变成"最近"，方向键就在 ↓/↑ 之间反复翻转，
-        # 光标在两台车之间来回跳（走 30 次也到不了）。现在：**一次走位只认一台**（锁住它的
-        # 像素框，不锁指纹 —— 同款同名车指纹一样，锁指纹会认错），除非它滚出视野才重挑。
-        locked = None                 # 锁定的目标框 (bx,by,bw,bh)
         visited = []                  # 光标框历史（震荡保护用）
         for _ in range(self.cfg.grid_walk_max):
             self.s.stop.check()
@@ -1480,83 +1522,55 @@ class Runner:
                 short = min(a1 - a0, b1 - b0)
                 return inter / float(short) if short > 0 else 0.0
 
-            valid = []           # 可处理的车格（不依赖指纹）
+            valid = []           # 可处理的车格（没 ♥、不在"本会话已处理/走不到"名单里）
             for (r, c, bx, by, bw, bh, has, sc) in tiles:
                 if has:
                     continue
                 # 【2026-10-04 修·与候选选择器对齐】以前这里把"当前驾驶的车"排除在目的地之外，
-                # 而上面的候选选择器（见 change_car 里那段注释）**保留**当前车当候选（未收藏的
-                # 当前车照样要解锁+加收藏）。一个选、一个不认 → 日志里 27 次
-                # `grid_target_unreachable`，每轮白等十几秒。现在两边口径一致：当前车也是
-                # 合法目的地（到站后由 _cursor_tile_binding / 身份判据处理它的特殊菜单）。
+                # 而候选选择器（change_car 里那段）**保留**当前车当候选（未收藏的当前车照样要
+                # 解锁+加收藏）。一个选、一个不认 → 日志里 27 次 `grid_target_unreachable`。
                 fp = self._title_crop(frame, bx, by, bw, bh)
                 if self._fp_seen(fp) or self._fp_matches(fp, self._unreachable):
                     continue
                 valid.append((r, c, bx, by, bw, bh, has, sc, fp))
-            # ① 光标压着的这格可处理吗？→ 到站
+            # ① 到站判据：光标压着的这一格就是待处理的车 → 到了（调用方按回车 = 选择操作）
             for (r, c, bx, by, bw, bh, has, sc, fp) in valid:
                 if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
                         and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
                     self._last_car_fp = fp
-                    self.log.event("grid_walk_stop", cell=[r, c],
-                                   heart_score=round(sc, 3), why="光标压着的就是待处理的车")
+                    self.log.event("grid_walk_stop", cell=[r, c], heart_score=round(sc, 3),
+                                   why="选择框压在待处理的车上了（到站，可以按回车了）")
                     return True
             if not valid:
                 self._last_walk_why = "no_candidate"
                 self.log.event("grid_walk_stop", why="视野里没有可处理的车格")
                 return False
-            # ② 决定目的地：优先继续走**已锁定**的那台（框还在视野里就继续）
-            tgt = None
-            if locked is not None:
-                for v in valid:
-                    if (_ov(locked[0], locked[0] + locked[2], v[2], v[2] + v[4]) > 0.5
-                            and _ov(locked[1], locked[1] + locked[3], v[3], v[3] + v[5]) > 0.5):
-                        tgt = v
-                        break
-                if tgt is None:
-                    locked = None                    # 锁定的那台滚出视野了 → 重挑
-            cx, cy = cbox[0] + cbox[2] / 2.0, cbox[1] + cbox[3] / 2.0
-            if tgt is None:
-                cur_cell = None                  # 光标所在格的 (行,列)（从所有车格里找，不限于候选）
-                for (r, c, bx, by, bw, bh, has, sc) in tiles:
-                    if (_ov(cbox[0], cbox[0] + cbox[2], bx, bx + bw) > 0.5
-                            and _ov(cbox[1], cbox[1] + cbox[3], by, by + bh) > 0.5):
-                        cur_cell = (r, c)
-                        break
-                tgt = min(valid, key=lambda v: (abs(v[0] - cur_cell[0]) + abs(v[1] - cur_cell[1])
-                                                if cur_cell else 0))
-                locked = tuple(tgt[2:6])         # 锁住这台，直到走到 / 滚出视野
-            tx = tgt[2] + tgt[4] / 2.0
-            ty = tgt[3] + tgt[5] / 2.0
-            same_col = _ov(cbox[0], cbox[0] + cbox[2], tgt[2], tgt[2] + tgt[4]) > 0.5
-            same_row = _ov(cbox[1], cbox[1] + cbox[3], tgt[3], tgt[3] + tgt[5]) > 0.5
-            # 【2026-10-03 实测】车库列表是纵向的：↓ 列内往下/到底跳下一列、↑ 反向；
-            # **→/← 在车库列表里不动光标**（日志：连按 4 次 right，光标框一动不动）。
-            # 候选在别的列 → 先沿 ↓/↑ "换列"；列对上 → 再按行 ↓/↑。
-            keys = []
-            if not same_col:
-                keys.append("down" if tx > cx else "up")
-            elif not same_row:
-                keys.append("down" if ty > cy else "up")
-            keys += [k for k in ("down", "up") if k not in keys]
-            self.log.event("grid_walk_step", same_col=bool(same_col), same_row=bool(same_row),
-                           keys=keys[:2], cursor=list(cbox), target=list(tgt[2:6]),
-                           locked=bool(locked), target_cell=[tgt[0], tgt[1]])
-            progressed = False
-            for key in keys[:max(1, tries_each)]:
-                self.press(key, f"走向待处理车格 {[tgt[0], tgt[1]]}")
-                self.sleep(self.cfg.grid_walk_dwell)
-                f2 = self.frame()
-                c2 = self._cursor_box(f2, self._grid_tiles(f2))
-                if c2 is not None and tuple(c2) != tuple(cbox):
-                    progressed = True
-                    break
-            if not progressed:
-                shot = self._save_evidence(self.frame(), "grid_walk_stuck")
-                print(f"  [!] 走不动（光标框 {cbox}）证据 {shot}")
-                self.log.event("grid_walk_fail", why="no_progress", cursor=list(cbox), shot=shot)
-                self._last_walk_why = "no_progress"
-                return False
+            # ② 挑目标：用户口径"先最左列、同列里最上面"（**不按**"离光标最近"挑 —— 那正是横跳来源）
+            tgt = min(valid, key=lambda v: (v[1], v[0]))
+            phase = "column" if int(tgt[2]) != int(cbox[0]) else "row"
+            if phase == "column":
+                key = "right" if int(tgt[2]) > int(cbox[0]) else "left"
+            else:
+                key = "down" if int(tgt[3]) > int(cbox[1]) else "up"
+            self.log.event("grid_walk_step", phase=phase, key=key, cursor=list(cbox),
+                           target=list(tgt[2:6]), target_cell=[tgt[0], tgt[1]],
+                           cursor_cell=self._cursor_cell(frame, tiles))
+            self.press(key, f"走位[{phase}] → 目标格 {[tgt[0], tgt[1]]}（{key}）")
+            # 等列表**稳定**再判（游戏选择光标有 ~2 秒动画；原来只等 0.6 秒就判"没动" →
+            # 按反向键 → 光标被拽回去 = 用户看到的上下横跳）
+            _f2, _t2, c2 = self._settle_after_key()
+            if c2 is None or tuple(int(v) for v in c2) == _cb:
+                # 这个键没让选择框动 → 换另一个方向键再试一次
+                alt = {"right": "left", "left": "right", "down": "up", "up": "down"}[key]
+                self.log.event("grid_walk_retry", key=alt, phase=phase)
+                self.press(alt, f"走位[{phase}] 换方向 → {alt}")
+                _f3, _t3, c3 = self._settle_after_key()
+                if c3 is None or tuple(int(v) for v in c3) == _cb:
+                    shot = self._save_evidence(self.frame(), "grid_walk_stuck")
+                    print(f"  [!] 走不动（光标框 {cbox}；试过 {key}/{alt}）证据 {shot}")
+                    self.log.event("grid_walk_fail", why="no_progress", cursor=list(cbox), shot=shot)
+                    self._last_walk_why = "no_progress"
+                    return False
         self._last_walk_why = "budget"
         self.log.event("grid_walk_fail", why="budget")
         return False
@@ -1840,8 +1854,16 @@ class Runner:
         _resynced_once = False      # "认不出车格"时只自愈一次，防止在两个坏状态之间打转
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
-            frame = self.frame()
-            tiles = self._grid_tiles(frame)
+            # 【2026-10-04 晚·真机采样的根因】上一轮按过 right/left 翻列之后**不能立刻读帧**：
+            # 游戏的选择光标/列表有 ~2 秒动画，动画中间读到的帧里光标框会"消失/滑动"、
+            # 同一格的 ♥ 读数会假跳（实测 0.568 →0.986 →0.556）→ 候选列表时有时无
+            # （日志里连着一二十次 `todo=0 no_heart=0` 多半就是这么来的）。
+            # 第 1 轮前面已经等过 wait_stable，所以只从第 2 轮起等"按键后稳定"。
+            if attempt > 1 and not self.cfg.replay:
+                frame, tiles, _cb_s = self._settle_after_key()
+            else:
+                frame = self.frame()
+                tiles = self._grid_tiles(frame)
             if not tiles:
                 shot = self._save_evidence(frame, "grid_no_tiles")
                 self.log.event("grid_no_tiles", shot=shot, resynced=_resynced_once)
@@ -1929,16 +1951,11 @@ class Runner:
                 shot = self._save_evidence(frame, f"target_r{r}c{c}")
                 self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
                                cand=len(todo), fp_ok=fp is not None, shot=shot)
-                # 【2026-10-03 用户建议】鼠标点这一格把光标放过去（绝对定位）。
-                # 【2026-10-04 实测修正】日志统计：这样做成功 6 次、**没选中 87 次**
-                # （命中率 ~7%），而每次失败都要白付 ~2.5 秒再退回方向键走路 →
-                # 现在默认关（cfg.use_mouse_select），直接走方向键；想试鼠标的在高级设置里开。
-                sel = self._click_tile(tiles, (r, c)) if self.cfg.use_mouse_select else False
-                if sel is not True:
-                    if self.cfg.use_mouse_select:
-                        print("  [找] 鼠标点不中 → 退回方向键走路")
-                        self.log.event("grid_click_fallback", row=r, col=c)
-                    sel = self._walk_to_tile()
+                # 【2026-10-04 晚·用户明确要求】鼠标**抛弃**，只用方向键找车：
+                # "抛弃掉鼠标，只用方向键找车"。原来那段"鼠标点这一格"是过渡方案
+                # （当时以为方向键走不准，实测命中率也只有 ~7%）——现在有了用户给的
+                # 真实操作模型（↑/↓ 列内、←/→ 换列），方向键完全够用且可验证。
+                sel = self._walk_to_tile()
                 if sel is not True:
                     # 走不到这台 → 记下它的指纹（本轮不再选它），换下一台继续，
                     # 不能因为一台够不着就把整个 B 阶段停掉（2026-10-03 就是这么失败的）
