@@ -234,6 +234,7 @@ class Runner:
         self._black_since: Optional[float] = None   # 连续全黑帧起点（防息屏兜底）
         self._black_last_nudge = 0.0                # 黑屏时上次「轻推鼠标唤醒」的时间
         self._black_last_note = 0.0                 # 黑屏时上次打印提示的时间（防刷屏）
+        self._hsv_memo = None                       # (frame, 车格区HSV, 原点) —— 同一帧只算一次（提速）
 
     # ---------------- 台账 ---------------- #
     def _load_ledger(self) -> dict:
@@ -815,7 +816,7 @@ class Runner:
                 in_menu = True
         return in_menu, sc
 
-    def _ensure_vehicle_tab(self, after_load: bool = False) -> bool:
+    def _ensure_vehicle_tab(self, after_load: bool = False, _recovering: bool = False) -> bool:
         """确保停在主菜单「车辆」标签页（用 tile_mastery 的出现来验证）。
 
         顺序很重要（2026-10-02 用户实测确认 + 第二次真跑）：
@@ -830,7 +831,15 @@ class Runner:
         # 【2026-10-03】attempts 5 → 10：上车加载要 13~18 秒，而这段等待以前是靠
         # wait_stable 干等 60 秒撑着的。现在取消干等、由这里轮询（每次 ≈ esc_dwell），
         # 所以次数要够覆盖 20 秒以上，否则加载没完就报"到不了车辆页"。
-        for attempt in range(10):
+        # 【2026-10-04 修 · 6/57 次运行卡在这】固定 10 次≈25 秒还是不够（慢盘/过场时会超），
+        # 改成**时间预算**：cfg.tab_ensure_budget（默认 45s），次数不再写死；预算内每轮
+        # 照旧"判页 → 该按什么按什么"，只是不再提前认输。
+        # * 注意：不要试图用"画面在不在动"区分"正在加载"和"人停在主世界"—— 两者画面都在动
+        #   （已验证：上车后落在自由驾驶，车在开、云在飘，画面永远不会静止）。
+        deadline = time.monotonic() + float(getattr(self.cfg, "tab_ensure_budget", 45.0))
+        attempt = -1
+        while time.monotonic() < deadline:
+            attempt += 1
             frame = self.frame()
             # 【2026-10-03 助手实跑抓到的 bug③】上车后只会经历"自由驾驶 → Esc → 主菜单"，
             # **绝不可能**回到「我的车辆」列表。看到列表 = 刚才根本没上去
@@ -897,6 +906,13 @@ class Runner:
                 print(f"  [B] 不在菜单里（主世界/加载中）→ 按 Esc 打开主菜单  {sc}")
                 self.press("esc", "自由驾驶 → 主菜单")
                 self.sleep(self.cfg.esc_dwell)
+        # 【2026-10-04 新增·自愈】预算用完还没到车辆页 → 先自己判断"我卡在哪一屏"并退回去
+        # （多半是误触进了「查看车辆」之类没人预期的界面），再给一轮机会。只做一次，防递归。
+        if (not _recovering and not self.cfg.replay
+                and bool(getattr(self.cfg, "auto_recover", True))):
+            _st = self.recover_to_known("判页超时（到不了车辆页）")
+            if _st in self.KNOWN_STATES:
+                return self._ensure_vehicle_tab(after_load=False, _recovering=True)
         self.log.event("vehicle_tab_fail", after_load=after_load)
         return False
 
@@ -1001,6 +1017,27 @@ class Runner:
             return None
         return cv2.cvtColor(frame[ty:ty + th, tx:tx + tw], cv2.COLOR_BGR2GRAY)
 
+    def _grid_hsv(self, frame):
+        """车格区域的 HSV 子图 + 它的原点 (ox, oy)。
+
+        【2026-10-04 · 提速】3840x2160 全帧 `BGR2HSV` 是这条链路最贵的一步之一，而
+        `_grid_tiles` 与 `_cursor_box` **每一步都要各算一次**（而它们看的都只是车格区域）。
+        两件事一起做：
+          ① 只对 `grid_area` 那一块（默认 3040x1500 ≈ 全帧的 55%）做色彩转换；
+          ② 同一帧对象只算一次 —— 用**对象身份**做键（`is`），所以永远不会拿到过期结果
+             （memo 里握着那一帧的引用，帧被回收时 memo 也一起被替换）。
+        """
+        memo = getattr(self, "_hsv_memo", None)
+        if memo is not None and memo[0] is frame:
+            return memo[1], memo[2]
+        x0, y0, x1, y1 = (int(v) for v in self.cfg.grid_area)
+        h, w = frame.shape[0], frame.shape[1]
+        x0 = max(0, min(x0, w - 1)); y0 = max(0, min(y0, h - 1))
+        x1 = max(x0 + 1, min(x1, w)); y1 = max(y0 + 1, min(y1, h))
+        hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+        self._hsv_memo = (frame, hsv, (x0, y0))
+        return hsv, (x0, y0)
+
     def _grid_tiles(self, frame) -> list:
         """检出「我的车辆」里**可见的每个车格**：[(row, col, x, y, w, h, has_heart, heart_score)]。
 
@@ -1012,14 +1049,13 @@ class Runner:
         if frame is None or getattr(frame, "ndim", 0) < 3:
             return []
         try:
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            hsv, (ox_area, oy_area) = self._grid_hsv(frame)
             S, V = hsv[:, :, 1], hsv[:, :, 2]
-            x0, y0, x1, y1 = self.cfg.grid_area
             white = ((V > 215) & (S < 45)).astype(np.uint8) * 255
-            white[:max(0, int(self.cfg.grid_origin[1]) - 10), :] = 0
-            white[int(y1):, :] = 0
-            white[:, :int(x0)] = 0
-            white[:, int(x1):] = 0
+            # 车格区域以上不算（子图坐标 = 全帧坐标 − 原点）
+            _top = max(0, int(self.cfg.grid_origin[1]) - 10 - oy_area)
+            if _top:
+                white[:_top, :] = 0
             white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
             cnts, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             boxes = []
@@ -1030,7 +1066,7 @@ class Runner:
                     continue
                 if cv2.contourArea(c) < 0.75 * bw * bh:
                     continue
-                boxes.append((bx, by, bw, bh))
+                boxes.append((bx + ox_area, by + oy_area, bw, bh))   # → 全帧坐标
             boxes.sort(key=lambda t: (t[1], t[0]))
             rows = []
             for t in boxes:
@@ -1106,10 +1142,12 @@ class Runner:
         try:
             if tiles is None:
                 tiles = self._grid_tiles(frame)
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # 【2026-10-04 提速】与 _grid_tiles 共用同一份"车格区 HSV"（同一帧只算一次），
+            # 采样框整体平移到子图坐标后夹取；tot 也按夹取后的面积算 → 比例不受影响。
+            hsv, (ox_area, oy_area) = self._grid_hsv(frame)
             H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
             yellow = ((H >= 25) & (H <= 45) & (S > 150) & (V > 150)).astype(np.uint8)
-            fh, fw = frame.shape[0], frame.shape[1]
+            fh, fw = hsv.shape[0], hsv.shape[1]
             best = None
             # 【参数是量出来的，2026-10-03】黄框在白底车格框**外 12~20 像素**处：
             #   pad= 5 → 全部 0.00（紧贴那圈没有黄）；pad=12 → 光标格 0.34 / 其他 0.00；
@@ -1121,8 +1159,8 @@ class Runner:
                                          (by + bh, bx, by + bh + pad, bx + bw),
                                          (by, bx - pad, by + bh, bx),
                                          (by, bx + bw, by + bh, bx + bw + pad)):
-                    sy, sx = max(0, sy), max(0, sx)
-                    ey, ex = min(fh, ey), min(fw, ex)
+                    sy, sx = max(0, sy - oy_area), max(0, sx - ox_area)
+                    ey, ex = min(fh, ey - oy_area), min(fw, ex - ox_area)
                     if ey <= sy or ex <= sx:
                         continue
                     sub = yellow[sy:ey, sx:ex]
@@ -1137,12 +1175,79 @@ class Runner:
         except Exception:
             return None
 
+    @staticmethod
+    def _ov_ratio(a0, a1, b0, b1) -> float:
+        """两段区间重叠占较短一段的比例（1=完全重叠，0=不沾边）。"""
+        inter = min(a1, b1) - max(a0, b0)
+        short = min(a1 - a0, b1 - b0)
+        return inter / float(short) if short > 0 else 0.0
+
+    def _tile_under_box(self, tiles, box):
+        """哪个车格被这个框覆盖（两个方向重叠都 > 一半）→ tile 元组；没有返回 None。
+
+        【2026-10-04 新增】"光标压着哪一格"现在有两处要用：
+        ① 到站后**重新绑定**"我到底在处理哪台车"（见 change_car）；
+        ② 加收藏后的**功能性复核**（见 _heart_at_cursor）。
+        """
+        if not tiles or box is None:
+            return None
+        x, y, w, h = box
+        for t in tiles:
+            if (self._ov_ratio(x, x + w, t[2], t[2] + t[4]) > 0.5
+                    and self._ov_ratio(y, y + h, t[3], t[3] + t[5]) > 0.5):
+                return t
+        return None
+
+    def _cursor_tile_binding(self, frame=None):
+        """**当前光标（黄框）压着的那一格** → (车名指纹, (row, col), tile, 是不是当前车)。
+
+        为什么需要它（2026-10-04 实测）：原来记的是"**打算去**的那台车"的指纹，而实际停在
+        的可能是另一格（日志 115546：目标第 4 列，停在 (0,0)）→ 后面加收藏的复核拿这个指纹
+        在列表里去找格子，必然找不到 → favorite_done ok=false、白跑 ~14 秒。以"光标实际压着
+        的那一格"为准，身份就自洽了。认不出黄框时返回 (None, None, None, False)。
+        """
+        frame = self.frame() if frame is None else frame
+        tiles = self._grid_tiles(frame)
+        if not tiles:
+            return None, None, None, False
+        cbox = self._cursor_box(frame, tiles)
+        t = self._tile_under_box(tiles, cbox)
+        if t is None:
+            return None, None, None, False
+        r, c, bx, by, bw, bh, has, sc = t
+        fp = self._title_crop(frame, bx, by, bw, bh)
+        try:
+            is_cur = bool(self._is_current_car(frame, t))
+        except Exception:
+            is_cur = False
+        return fp, (int(r), int(c)), t, is_cur
+
+    def _heart_at_cursor(self) -> bool:
+        """**光标（黄框）现在压着的那一格**有没有 ♥ —— 加收藏的功能性复核。
+
+        【2026-10-04 修】原来是 `_heart_shown(self._last_car_fp)`：拿"刚处理的那台车"的
+        车名指纹在整屏里找格子。指纹是**过去某一帧**的裁图，列表一滚 / 一重进就找不到 →
+        明明加上了却判成失败（日志 115546 的 favorite_done ok=false）。光标格不需要"认得出
+        是哪台车"，它就是刚刚按下「添加至收藏」的那一格。
+        """
+        for _ in range(3):
+            frame = self.frame()
+            tiles = self._grid_tiles(frame)
+            t = self._tile_under_box(tiles, self._cursor_box(frame, tiles))
+            if t is not None:
+                return bool(t[6])
+            self.sleep(0.35)
+        return False
+
     def _cursor_cell(self, frame, tiles):
         """光标（黄色高亮框）现在在哪个车格 → (row, col)；认不出返回 None。"""
-        box = self._cursor_box(frame)
+        box = self._cursor_box(frame, tiles)
         if box is None:
             return None
-        try:
+        t = self._tile_under_box(tiles, box)
+        if t is not None:
+            return (t[0], t[1])
+        try:                                        # 兜底：按中心最近
             x, y, w, h = box
             cx, cy = x + w / 2.0, y + h / 2.0
             best = None
@@ -1281,9 +1386,14 @@ class Runner:
             self.sleep(self.cfg.grid_walk_dwell)
             f2 = self.frame()
             c2 = self._cursor_box(f2, self._grid_tiles(f2))
-            if c2 is None:                     # 黄框判不出来 → 交给功能性验证
-                self.log.event("grid_click_ok", cell=list(cell), cursor=None)
-                return True
+            if c2 is None:
+                # 【2026-10-04 修】原来这里 return True（"判不出就当点中了"）—— 这是
+                # "看不见就假设成功"，正是"程序莫名其妙"的温床：后面那下回车打在哪全凭运气。
+                # 现在返回 None（**未确定**）：上层不走"成功"分支，而是退回方向键走路；
+                # 走路的第一步就会检查"光标是不是已经在这一格上"，点中了也不会白走。
+                self.log.event("grid_click_unverified", cell=list(cell), cursor=None)
+                print("  [!] 点完判不出黄框 → 按「未确定」处理，改走方向键复核")
+                return None
             if abs(c2[0] - bx) <= 24 and abs(c2[1] - by) <= 24:
                 self.log.event("grid_click_ok", cell=list(cell), cursor=list(c2))
                 return True
@@ -1515,6 +1625,22 @@ class Runner:
         #   现在判"是不是当前车"改用车格里的「驾驶中」小图标（见 _is_current_car）：
         #   它比位置稳（列表一滚位置就变），也比 ♥ 稳（**未收藏**的当前车两处 ♥ 都空）。
         self._seen_screens = []        # 新的一次翻页：清空"看过哪些屏"
+        # 【2026-10-04 修 · 走不到的车被反复选中】"这次走不到"的名单必须**每次进列表清一次**，
+        # 不能**每次尝试清一次**：原来这行写在下面的 for 里 → 刚记下"这台走不到"，
+        # 下一屏就被抹掉 → 同一台车在同一轮里被反复选中、反复白走 30 次按键
+        # （日志 run_20261003_115546：一轮里 grid_target_unreachable 出现 10 次，
+        #   两次扫描之间隔了 46 秒）。"同款同名车指纹相同"用"只记本轮"解决就够了。
+        self._unreachable = []
+        # 品牌翻页计数同理：它统计的是"**本轮**连翻几个品牌都没找到没♥的车"。
+        # 原来用 getattr 累加、跨轮不重置 → 第二轮起带着上一轮的计数，累计到 6 之后
+        # 每一轮都会被判成"没有可处理的车"直接收工。
+        self._brand_jumps = 0
+        # 【2026-10-04 提速】翻屏不再"按之前抓一帧、按之后再抓一帧"（实测 1.10 秒/屏）：
+        # 按下 right 之后**不抓帧**，把"按之前这一屏"记在 _adv_before，下一轮循环开头
+        # 已经抓到新帧了，直接用那一帧结算 diff → 一屏只抓一帧 ≈ 0.6 秒，整库省一半。
+        self._adv_before = None      # 上一屏按 right 之前的列表区域
+        self._adv_diff = None        # 上一次 right 到底滚没滚（用下一帧算出来的）
+        first_sig = None             # 本轮第一屏的签名（"绕回开头"只跟它比）
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
             frame = self.frame()
@@ -1524,12 +1650,23 @@ class Runner:
                 print(f"  [!] 认不出车格（证据 {shot}）→ 结束 B")
                 self.log.event("grid_no_tiles", shot=shot)
                 return False
+            # 【2026-10-04 提速】结算"上一屏按的 right 到底滚没滚" —— 用**这一帧**（已经抓到）
+            # 算，不再额外抓一帧。diff 存进 self._adv_diff，供下面的"翻到头了吗"用。
+            if self._adv_before is not None:
+                self._adv_diff = float(block_max_abs_diff(
+                    self._adv_before, self._list_roi(frame),
+                    blocks=self.cfg.nav_change_blocks))
+                self.log.event("grid_advance", attempt=attempt - 1,
+                               diff=round(self._adv_diff, 1))
+            else:
+                self._adv_diff = None
+            self._adv_before = None
             cur = self._cursor_cell(frame, tiles)
-            # （原来这里还有一道"首次进列表、光标那格一律跳过"的几何种子 —— 2026-10-03
+            # （原来这里还有一道"首次进列表、光标那格一律跳过"的几何种子
             #   用户作废位置规则后一并删除，改由 _is_current_car 看「驾驶中」图标。）
             # 每次进列表都清空"这次走不到"的名单：它只用来**本轮**别重复撞同一台，
             # 绝不能变成永久跳过（车库里同款同名车指纹相同，永久跳过会误杀）。
-            self._unreachable = []
+            # 【2026-10-04 修】清空动作已移到 for 外（见上）—— 放在这里等于"每次尝试都忘掉"。
             # 【两道校验并用，缺一不可】2026-10-03 用户补充：“有的车我点满了也没有加入收藏，
             # 所以你不能删掉旧的校验机制” —— 所以 ♥ 只是“他标记过的车”，不是全集：
             # 候选 = 「没 ♥」**且**「本次会话还没处理过」（指纹集合，旧机制）。
@@ -1580,13 +1717,16 @@ class Runner:
                 shot = self._save_evidence(frame, f"target_r{r}c{c}")
                 self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
                                cand=len(todo), fp_ok=fp is not None, shot=shot)
-                # 【2026-10-03 用户建议】直接用鼠标点这一格把光标放过去（绝对定位，
-                # 不再依赖"光标+方向键走路"那套 —— 它已三次翻车）。点不中再退回走路。
-                sel = self._click_tile(tiles, (r, c))
+                # 【2026-10-03 用户建议】鼠标点这一格把光标放过去（绝对定位）。
+                # 【2026-10-04 实测修正】日志统计：这样做成功 6 次、**没选中 87 次**
+                # （命中率 ~7%），而每次失败都要白付 ~2.5 秒再退回方向键走路 →
+                # 现在默认关（cfg.use_mouse_select），直接走方向键；想试鼠标的在高级设置里开。
+                sel = self._click_tile(tiles, (r, c)) if self.cfg.use_mouse_select else False
                 if sel is not True:
-                    print("  [找] 鼠标点不中 → 退回方向键走路")
-                    self.log.event("grid_click_fallback", row=r, col=c)
-                    sel = True if self._walk_to_tile() else False
+                    if self.cfg.use_mouse_select:
+                        print("  [找] 鼠标点不中 → 退回方向键走路")
+                        self.log.event("grid_click_fallback", row=r, col=c)
+                    sel = self._walk_to_tile()
                 if sel is not True:
                     # 走不到这台 → 记下它的指纹（本轮不再选它），换下一台继续，
                     # 不能因为一台够不着就把整个 B 阶段停掉（2026-10-03 就是这么失败的）
@@ -1595,14 +1735,45 @@ class Runner:
                     print("  [找] 这台走不到 → 记下并换下一台")
                     self.log.event("grid_target_unreachable", row=r, col=c)
                     continue
+                # ---------- 【2026-10-04 修：到站后重新绑定身份】----------
+                # 之前这里直接把 **todo[0]（打算去的那台）** 的指纹记为"已处理"。可实测
+                # （日志 run_20261003_115546 + 证据图 target_r0c3_20261003_115627.png）：
+                # 目标本来是第 4 列那台没♥的车，程序却在 `cell=[0,0]` 上就宣布"到站"
+                # （同一格的 ♥ 读数在前一帧 1.000、后一帧 0.554）→ 上的是另一台车，
+                # 却把目标的指纹记成了"刚处理的车" → 后面"加收藏"的复核拿这个指纹在列表里
+                # 去找格子，必然找不到 → favorite_done ok=false，白跑 ~14 秒 + 收藏状态可疑。
+                # 现在：**以光标实际压着的那一格为准**重新取指纹/格号/身份。
+                _fp_now, _cell_now, _tile_now, _is_cur_now = self._cursor_tile_binding()
+                if self.cfg.walk_confirm_heart and _tile_now is not None and bool(_tile_now[6]):
+                    # 二次确认：到站后复核"这格确实没♥"。单帧读数会在帧间翻转（见上），
+                    # 所以按标定阈值直接信单帧是不够的；复核发现它有♥ → 不碰它，接着扫。
+                    self.log.event("grid_candidate_flip",
+                                   cell=[int(_cell_now[0]), int(_cell_now[1])],
+                                   heart_score=round(float(_tile_now[7]), 3),
+                                   note="到站后复核发现这格有♥ → 跳过它继续扫描")
+                    print(f"  [找] 到站复核：这格其实有♥"
+                          f"（{float(_tile_now[7]):.3f}）→ 不看它，继续扫描")
+                    continue
+                if _tile_now is not None:
+                    if _fp_now is not None:
+                        fp = _fp_now
+                    r, c = int(_cell_now[0]), int(_cell_now[1])
+                    self._target_is_cur = bool(_is_cur_now)
+                    self.log.event("car_fp_rebind", cell=[r, c], fp_ok=_fp_now is not None)
+                else:
+                    # 黄框判不出来（罕见）→ 保留原判据，但把这件事记清楚
+                    self._target_is_cur = self._is_current_car(
+                        self.frame(), (r, c, bx, by, bw, bh, has, sc))
+                    self.log.event("car_fp_rebind_skipped", row=r, col=c)
                 self._last_car_fp = fp
+
                 # 【2026-10-03 修·漏车第二处】走到的这台如果**本来就是当前驾驶的车** →
                 # 不要走「上车」菜单：那台车的菜单**没有「上车」项**（第 1 项是加入收藏、
                 # 第 2 项是查看车辆←回车会弹"回到嘉年华"✗）。旧代码在这里把它记进
                 # "走不到"名单 → 本轮**永久漏掉这一台** ✗（用户实测"还会漏掉未收藏车辆"）。
                 # 它就是当前车 → 直接跳过上车（不碰它的菜单），交给后面的精通页流程。
-                self._target_is_cur = self._is_current_car(
-                    self.frame(), (r, c, bx, by, bw, bh, has, sc))
+                # 【2026-10-04】身份已经在上面"到站重新绑定"时判过了（用光标那一格的**同一帧**
+                # 判的）—— 这里不再重新判：那会用旧格框去套新帧，等于把刚修好的绑定又冲掉。
                 if self._target_is_cur:
                     self.log.event("enter_car_skipped_current", row=r, col=c)
                     print("  [换] 这台就是当前驾驶的车 → 不用上车，直通精通页")
@@ -1621,28 +1792,28 @@ class Runner:
                 return True
             # 这一屏都收藏过了 → 往右滚一列，把后面的车拉进来
             print(f"  [找] 第 {attempt} 屏：{len(tiles)} 格全都有 ♥ → 往右滚一列")
-            before = self._list_roi(frame)
+            cur_roi = self._list_roi(frame)          # 这一屏的列表区域（后面要拿它算 diff）
             # 【2026-10-03 用户口径】"应该是翻完**全部**的车辆列表然后回到开头之后才能说没有"
             # —— 不能按"翻了多少屏"认输（原来 nav_budget=24 就认输，用户车库远不止 24 屏）。
-            # 给每屏画面算一个缩略签名：新的屏与看过的某一屏几乎一样 → 列表已经绕回开头
-            # = 全部翻完，这才能收工。
-            _sig = self._roi_sig(before)
+            # 给每屏画面算一个缩略签名；【2026-10-04 改】只跟**本轮第一屏**比（见下），
+            # 不再跟"所有看过的屏"逐一比 —— 那样既贵，又可能被别处某一屏的相似缩略图
+            # 误判成"已经翻完"（提前收工是用户明确最不能接受的）。
+            _sig = self._roi_sig(cur_roi)
+            if first_sig is None:
+                first_sig = _sig                      # 本轮第一屏
+            elif attempt >= 3 and _sig is not None and self._sig_same(first_sig, _sig):
+                print(f"  [B] 滚回本轮第一屏（已翻 {attempt - 1} 屏）→ 整个列表翻完了 ✓")
+                self.log.event("grid_wrapped", screens=attempt - 1, back_to=1)
+                self._all_cars_seen = True
+                return False
             if _sig is not None:
-                for _i, _old in enumerate(self._seen_screens):
-                    if self._sig_same(_old, _sig):
-                        print(f"  [B] 滚回看过的第 {_i + 1} 屏（共看过 "
-                              f"{len(self._seen_screens)} 屏）→ 整个列表翻完了 ✓")
-                        self.log.event("grid_wrapped", screens=len(self._seen_screens),
-                                       back_to=_i + 1)
-                        self._all_cars_seen = True
-                        return False
-                self._seen_screens.append(_sig)
+                self._seen_screens.append(_sig)   # 只用于日志/回溯，判"绕回"看 first_sig
             self.press("right", "右移一列（找没收藏的车）")
-            self.sleep(self.cfg.grid_walk_dwell)
-            after = self._list_roi(self.frame())
-            diff = float(block_max_abs_diff(before, after, blocks=self.cfg.nav_change_blocks))
-            self.log.event("grid_advance", attempt=attempt, diff=round(diff, 1))
-            if diff < self.cfg.nav_change_threshold:
+            self.sleep(float(getattr(self.cfg, "grid_scroll_dwell", self.cfg.grid_walk_dwell)))
+            # 【2026-10-04 提速】按完不抓帧 —— 记下这一屏，下一轮开头用新帧结算 diff
+            self._adv_before = cur_roi
+            diff = self._adv_diff if self._adv_diff is not None else -1.0
+            if self._adv_diff is not None and self._adv_diff < self.cfg.nav_change_threshold:
                 # 【用户建议"点击翻页"】本品牌滚到头了 → 鼠标点品牌栏 ▶ 箭头换下一个品牌
                 # （实测品牌箭头在 (3621,354)，见 docs/业务实测要点.md）。一个品牌的车
                 # 处理完就走下一个品牌，点满 6 个品牌都还是"没得处理"才认输。
@@ -1660,6 +1831,9 @@ class Runner:
                 b_diff = float(block_max_abs_diff(b_before, b_after, blocks=self.cfg.nav_change_blocks))
                 self.log.event("grid_brand_jump", n=self._brand_jumps, diff=round(b_diff, 1))
                 print(f"  [B] 本品牌滚到头（差 {diff:.1f}）→ 点 ▶ 翻到下一个品牌（第 {self._brand_jumps} 个）")
+                # 【2026-10-04】换了品牌 = 换了一整份列表 → "本轮第一屏"的记忆作废重来
+                first_sig = None
+                self._seen_screens = []
                 if b_diff < self.cfg.nav_change_threshold:      # 连品牌都没变 → 真没得翻了
                     shot = self._save_evidence(self.frame(), "grid_end")
                     self.log.event("grid_end", diff=round(b_diff, 1), why="品牌也翻不动", shot=shot)
@@ -1751,31 +1925,21 @@ class Runner:
                 self.sleep(0.4)
             self.press(self.cfg.confirm_key, f"确认「添加至收藏」（第 {attempt + 1} 次）")
             self.sleep(1.1)
-            if self._heart_shown(self._last_car_fp):
-                self.log.event("favorite_done", ok=True, downs=downs)
+            # 【2026-10-04 修】复核改成"**光标那一格**有没有♥"（光标格不需要认得出来是哪台车，
+            # 它就是刚刚按下「添加至收藏」的那一格）；指纹法留作兜底 —— 它要求"在屏幕上找得到
+            # 过去某一帧的裁图"，列表一滚/一重进就会失效（旧的 ok=false 就是这么来的）。
+            _at_cursor = self._heart_at_cursor()
+            if _at_cursor or self._heart_shown(self._last_car_fp):
+                self.log.event("favorite_done", ok=True, downs=downs,
+                               via=("cursor" if _at_cursor else "fp"))
                 print("  [B] 加入收藏 成功 ✅（已看到 ♥）")
                 return True
-            if attempt == 0:
-                print("  [!] 没看到 ♥ → 多半是 3 项菜单（首项就是「添加至收藏」）→ "
-                      "Esc 退出来，改成不按 ↓ 再试一次")
-                self.press("esc", "退出（可能进了「查看车辆」或菜单还开着）")
-                self.sleep(1.0)
-                self.press("esc", "再退一层")
-                self.sleep(1.0)
-                if not self._ensure_vehicle_tab():
-                    self.log.event("favorite_done", ok=False, why="tab_lost")
-                    return False
-                if not self.click_match("tile_change_car", note="重新进列表（重试加收藏）"):
-                    self.log.event("favorite_done", ok=False, why="list_lost")
-                    return False
-                if self._wait_for("page_title_garage", self.cfg.page_timeout) is None:
-                    self.log.event("favorite_done", ok=False, why="list_lost")
-                    return False
-                if not self._walk_to_fp(self._last_car_fp):
-                    self.log.event("favorite_done", ok=False, why="walk_back_failed")
-                    return False
-        self.log.event("favorite_done", ok=False, why="both_offsets_failed")
-        print("  [B] 加入收藏 没成功（两种按键组合都不行）→ 下次还会被当成待处理")
+            self.log.event("favorite_unverified", downs=downs,
+                           fp_based=bool(self._heart_shown(self._last_car_fp)))
+            print("  [B] 按完了但那一刻没看到 ♥ → 不反复重按（反复按会在"
+                  "「加入收藏 ⇄ 取消收藏」之间来回切）")
+            return False
+        self.log.event("favorite_done", ok=False, why="no_attempt")
         return False
 
     def _heart_shown(self, fp) -> bool:
@@ -2288,6 +2452,99 @@ class Runner:
                   "如果你已经在赛事里，加 --no-car-check 跳过这条校验")
         self.log.event("car_check_failed", in_menu=in_menu, scores=sc)
         return False
+
+    # ---------------- 界面状态分类 + 自愈（2026-10-04 新增）---------------- #
+    # 用一个「判据分数向量」给当前屏幕贴标签。为什么需要（用户原话："有些莫名其妙"）：
+    # 程序原来只在**预期的那几步**判页；一旦停在没人预期的界面（误触进的「查看车辆」、
+    # 别人的弹窗、卡在某个加载），它就会**继续按计划里的键** → 越走越远，日志里只剩
+    # 一串看不懂的按键。有了标签，程序至少能自己回答"我在哪一屏、该往哪退"。
+    STATE_LABELS = (
+        ("story_menu", ("tile_collection",)),                 # 主菜单·剧情页（收集簿磁贴）
+        ("veh_menu", ("tile_mastery",)),                      # 主菜单·车辆页
+        ("garage_list", ("page_title_garage",)),              # 我的车辆 列表
+        ("mastery", ("page_title_mastery",)),                 # 车辆精通页
+        ("result", ("hint_esc_retry", "panel_result")),        # 赛事结算
+        ("dialog_rate", ("popup_rate_event",)),               # 「为挑战评分?」
+        ("dialog_nopts", ("popup_no_resource",)),             # 「不够支付全部」
+        ("dialog_home", ("popup_move_home",)),                # 「移动至住所」（Esc 关不掉）
+        ("car_menu", ("menu_select_title",)),                 # 「选择操作」菜单
+        ("search_panel", ("panel_search_title",)),            # 搜索共享代码面板
+        ("brand_panel", ("panel_manufacturer",)),             # 制造商面板
+    )
+    KNOWN_STATES = ("story_menu", "veh_menu", "garage_list", "mastery", "world", "result")
+
+    def _where_am_i(self, frame=None):
+        """给当前帧贴标签 → (状态名, {判据: 分数})。**单帧 probe，不动去抖状态**。
+
+        "world" = 上面所有判据都不命中（主世界自由驾驶 / 加载过场 / 真的认不出）。
+        """
+        frame = self.frame() if frame is None else frame
+        # 空白/近空白画面（黑屏、加载过场、抓错窗口抓到的空桌面）→ 直接判"不在任何已知界面"：
+        # 这种画面本来就没有可辨认内容，跑十几次模板匹配纯属浪费算力；而且低反差会让
+        # 归一化相关给出虚高分（实测 panel_search_title 在纯灰帧上是 0.909）。
+        # 用 [::8,::8] 采样估标准差（全帧 std 会临时吃掉几百 MB）。
+        try:
+            if float(frame[::8, ::8].std()) < 3.0:
+                return "world", {}
+        except Exception:
+            pass
+        sc = {}
+        for _lab, names in self.STATE_LABELS:
+            for n in names:
+                d = self.s.dets.get(n)
+                if d is None or n in sc:
+                    continue
+                try:
+                    s, _m = d.probe(frame)
+                    sc[n] = round(float(s), 3) if s == s else None
+                except Exception:
+                    sc[n] = None
+        best, best_v = "world", 0.0
+        for lab, names in self.STATE_LABELS:
+            for n in names:
+                d = self.s.dets.get(n)
+                v = sc.get(n)
+                if d is None or v is None:
+                    continue
+                if v >= float(d.threshold) and v > best_v:
+                    best, best_v = lab, v
+        return best, sc
+
+    def recover_to_known(self, note: str = "", rounds: int = 0) -> str:
+        """卡在"认不出的界面"时主动退回一个已知状态。
+
+        只做保守动作：**绝不按回车**（历史上误触「移动至住所」「查看车辆」都是回车导致的），
+        除非那是该弹窗唯一的关法（「移动至住所」要 ↓+回车选「取消」）。其余一律 Esc
+        （游戏里 Esc = 退一层），每按一次都重新判"我现在在哪"。
+        返回最终落在哪个状态标签。
+        """
+        if self.cfg.replay or not bool(getattr(self.cfg, "auto_recover", True)):
+            return "disabled"
+        rounds = rounds or int(getattr(self.cfg, "recover_rounds", 4) or 4)
+        state = "unknown"
+        for i in range(max(1, rounds)):
+            state, sc = self._where_am_i()
+            self.log.event("recover_probe", i=i, state=state, scores=sc)
+            if state in self.KNOWN_STATES:
+                break
+            if state == "dialog_home":
+                # 「移动至住所」：Esc 关不掉（实测），必须 ↓ 选「取消」再回车
+                self.press("down", "自愈：「移动至住所」→ 选「取消」")
+                self.sleep(0.4)
+                self.press(self.cfg.confirm_key, "自愈：确认「取消」")
+            elif state == "dialog_nopts":
+                self.press(self.cfg.confirm_key, "自愈：关掉「不够支付全部」")
+            elif state == "dialog_rate":
+                self.press(self.cfg.dialog_cancel_key, "自愈：关掉「为挑战评分?」")
+            elif state == "car_menu":
+                self.press("esc", "自愈：关掉「选择操作」菜单")
+            else:
+                self.press("esc", "自愈：退回上一层")
+            self.sleep(self.cfg.esc_dwell)
+        state, _sc = self._where_am_i()
+        self.log.event("recover_done", state=state, note=note)
+        print(f"  [自愈] {note or '界面认不出'} → 现在在「{state}」")
+        return state
 
     def clear_blocking_dialog(self, note: str = "", patience: float = 45.0) -> bool:
         """等「挡路弹窗」出现并关掉它（**只看真判据**；按键由 cfg.dialog_cancel_key 决定，默认回车）。

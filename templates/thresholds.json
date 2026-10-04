@@ -888,6 +888,7 @@
       ],
       "search": "roi",
       "match_ms": 8.04,
+      "min_std": 6.0,
       "confirm_frames": 2,
       "pos_scenes": [
         "event_entry"

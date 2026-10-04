@@ -95,6 +95,7 @@ def build_detectors(names: Iterable[str],
             release_threshold=(float(item["release_threshold"])
                                if item.get("release_threshold") is not None else None),
             confirm_frames=int(item.get("confirm_frames", 2)),
+            min_std=float(item.get("min_std", 0.0) or 0.0),
             name=name,
         )
     return out

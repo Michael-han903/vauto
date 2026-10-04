@@ -441,5 +441,237 @@ try:
 except Exception as _e:
     ck("候选排序自检可运行", False, repr(_e))
 
+print("\n⑭ 【2026-10-04 修】「走不到」名单的作用域 —— 静态检查 flow/runner.py")
+# 日志证据 run_20261003_115546：一轮里 grid_target_unreachable 出现 10 次、两次扫描隔 46 秒。
+# 根因：`self._unreachable = []` 写在了 for attempt 循环**里面** → 刚记住"这台走不到"，
+# 下一屏就被抹掉 → 同一台车在同一轮里被反复选中。这是"改回去就会重现"的那种 bug，
+# 所以用静态检查钉住（DETECTORS 名单也是这么钉的）。
+try:
+    _src14 = pathlib.Path(__file__).resolve().parent / "flow" / "runner.py"
+    _ls14 = _src14.read_text(encoding="utf-8").splitlines()
+    _i0 = next(i for i, ln in enumerate(_ls14) if "def change_car(self)" in ln)
+    _i1 = next(i for i in range(_i0 + 1, len(_ls14)) if _ls14[i].startswith("    def "))
+    _body14 = _ls14[_i0:_i1]
+    _for14 = next(i for i, ln in enumerate(_body14)
+                  if "for attempt in range(1, self.cfg.nav_budget + 1):" in ln)
+    _clr14 = next(i for i, ln in enumerate(_body14) if ln.strip() == "self._unreachable = []")
+    _ind14 = len(_body14[_clr14]) - len(_body14[_clr14].lstrip())
+    ck("清空「走不到」名单在 for 之外（不会被每屏抹掉）",
+       _clr14 < _for14 and _ind14 <= 8,
+       f"清空在第 {_clr14} 行(缩进{_ind14}) / for 在第 {_for14} 行")
+    ck("品牌翻页计数每轮重置（不再 getattr 累加跨轮）",
+       any(ln.strip() == "self._brand_jumps = 0" for ln in _body14), "")
+    ck("翻屏每屏只抓一帧（用完再结算 diff，不再 after=抓帧）",
+       "_adv_before" in "\n".join(_body14)
+       and not any(ln.strip().startswith("after = self._list_roi(self.frame())")
+                   for ln in _body14), "")
+    ck("「绕回开头」只跟本轮第一屏比（不再跟所有看过的屏逐一比）",
+       "first_sig" in "\n".join(_body14)
+       and "for _i, _old in enumerate(self._seen_screens)" not in "\n".join(_body14), "")
+except Exception as _e14:
+    ck("runner 静态检查可运行", False, repr(_e14))
+
+print("\n⑮ 【2026-10-04 修】鼠标点车格：判不出黄框**绝不许**当成功")
+# 日志统计：这一条路成功 6 次 / 没选中 87 次（命中率 ~7%）。更要命的是旧代码在
+# "判不出黄框"时 return True（看不见就假设成功）→ 后面那下回车打在哪全凭运气。
+try:
+    import numpy as _np15
+    from flow.config import RunConfig as _RC15
+    from flow.runner import Runner as _R15, build_offline_stack as _BOS15
+
+    class _Cap15:
+        def __init__(self, f):
+            self._f = f
+        def grab(self, region=None):
+            return self._f
+
+    _cfg15 = _RC15()
+    _cfg15.log_dir = tempfile.mkdtemp(prefix="vauto_selftest15_")
+    _cfg15.dry_run = True
+    _cfg15.use_mouse_select = True
+    _cfg15.grid_walk_dwell = 0.01
+    _r15 = _R15(_BOS15(capture=_Cap15(_np15.full((2160, 3840, 3), 200, _np15.uint8))), _cfg15)
+    _tiles15 = [(0, 0, 800, 400, 648, 488, False, 0.2)]
+
+    _r15._cursor_box = lambda *a, **k: None
+    ck("判不出黄框 → 返回「未确定」（不是 True）", _r15._click_tile(_tiles15, (0, 0)) is not True,
+       "旧实现在这里直接判成功 ✗")
+    _r15._cursor_box = lambda *a, **k: (800, 400, 648, 488)
+    ck("黄框确实落在目标格 → 认成功", _r15._click_tile(_tiles15, (0, 0)) is True, "")
+    _r15._cursor_box = lambda *a, **k: (1500, 400, 648, 488)
+    ck("黄框落在别的格 → 判「没选中」", _r15._click_tile(_tiles15, (0, 0)) is False, "")
+except Exception as _e15:
+    ck("鼠标点选自检可运行", False, repr(_e15))
+
+print("\n⑯ 【2026-10-04 修】到站后按**光标那一格**绑定身份 + ♥ 复核（用 115627 那张证据图）")
+# 日志 115546：目标本来是第 4 列那台没♥的车，程序却在 cell=[0,0] 上宣布"到站"，
+# 却把**目标**的指纹记成"刚处理的车" → 加收藏复核拿这个指纹在列表里找不到格子 →
+# favorite_done ok=false，白跑 ~14 秒。现在以光标实际压着的那一格为准。
+try:
+    _p16 = pathlib.Path(__file__).resolve().parent / "logs" / "target_r0c3_20261003_115627.png"
+    if not _p16.is_file():
+        print("  --  跳过（没有 logs/target_r0c3_20261003_115627.png 这张实机证据图）")
+    else:
+        import numpy as _np16
+        import cv2 as _cv16
+        from flow.config import RunConfig as _RC16
+        from flow.runner import Runner as _R16, build_offline_stack as _BOS16
+
+        class _Cap16:
+            def __init__(self, f):
+                self._f = f
+            def grab(self, region=None):
+                return self._f
+
+        _im16 = _cv16.imdecode(_np16.fromfile(str(_p16), dtype="uint8"), _cv16.IMREAD_COLOR)
+        _cfg16 = _RC16()
+        _cfg16.log_dir = tempfile.mkdtemp(prefix="vauto_selftest16_")
+        _r16 = _R16(_BOS16(capture=_Cap16(_im16)), _cfg16)
+        _ts16 = _r16._grid_tiles(_im16)
+        ck("_grid_tiles 在「HSV 收窄 + 同帧只算一次」之后与基准逐位一致",
+           [(t[0], t[1], t[2], t[3], t[4], t[5], bool(t[6])) for t in _ts16] == [
+               (0, 0, 816, 424, 648, 488, True), (0, 1, 1506, 424, 648, 488, True),
+               (0, 2, 2170, 424, 648, 488, True), (0, 3, 2860, 424, 648, 488, False),
+               (1, 0, 816, 937, 648, 479, True), (1, 1, 1506, 928, 648, 488, True),
+               (1, 2, 2170, 928, 648, 488, True), (1, 3, 2860, 928, 648, 488, True),
+               (2, 0, 1506, 1432, 648, 468, True)],
+           f"得到 {len(_ts16)} 格")
+        _fp16, _cell16, _tile16, _cur16 = _r16._cursor_tile_binding()
+        ck("到站绑定 = 光标实际压着的那一格（不是「打算去」的那一格）",
+           _cell16 == (0, 0) and _fp16 is not None and _tile16 is not None,
+           f"cell={_cell16} fp={'有' if _fp16 is not None else '无'}")
+        ck("♥ 复核按光标格（该格有♥ → True）", _r16._heart_at_cursor() is True, "")
+        ck("_cursor_box 与基准一致", _r16._cursor_box(_im16, _ts16) == (816, 424, 648, 488),
+           f"{_r16._cursor_box(_im16, _ts16)}")
+except Exception as _e16:
+    ck("到站绑定自检可运行", False, repr(_e16))
+
+print("\n⑰ 【2026-10-04 修】判页按时间预算收手（不再固定 10 次 ≈20 秒）")
+# 日志：6/57 次运行卡在「到不了车辆页」，因为固定 10 次 × esc_dwell(2s) 只有 ~25 秒，
+# 上车加载 13~18 秒 + 慢盘就超了。现在按 cfg.tab_ensure_budget（默认 45s）。
+try:
+    import time as _time17
+    import numpy as _np17
+    from flow.config import RunConfig as _RC17
+    from flow.runner import Runner as _R17, build_offline_stack as _BOS17
+
+    class _Cap17:
+        def __init__(self, f):
+            self._f = f
+        def grab(self, region=None):
+            return self._f
+
+    _cfg17 = _RC17()
+    _cfg17.log_dir = tempfile.mkdtemp(prefix="vauto_selftest17_")
+    _cfg17.tab_ensure_budget = 0.2
+    _cfg17.auto_recover = False
+    _cfg17.dry_run = True
+    _r17 = _R17(_BOS17(capture=_Cap17(_np17.full((2160, 3840, 3), 200, _np17.uint8))), _cfg17)
+    _t17 = _time17.monotonic()
+    _ok17 = _r17._ensure_vehicle_tab()
+    _d17 = _time17.monotonic() - _t17
+    ck("预算到点就收手（固定 10 次的话这里要 ~20 秒）", _ok17 is False and _d17 < 8.0,
+       f"耗时 {_d17:.2f}s → {_ok17}")
+except Exception as _e17:
+    ck("判页预算自检可运行", False, repr(_e17))
+
+print("\n⑱ 【2026-10-04 新增】界面状态分类 + 自愈（认不出界面时能说清「我在哪」）")
+try:
+    import numpy as _np18
+    import cv2 as _cv18
+    from flow.config import RunConfig as _RC18
+    from flow.runner import Runner as _R18, build_offline_stack as _BOS18
+
+    class _Cap18:
+        def __init__(self, f):
+            self._f = f
+        def grab(self, region=None):
+            return self._f
+
+    _p18 = pathlib.Path(__file__).resolve().parent / "logs" / "target_r0c3_20261003_115627.png"
+    _cfg18 = _RC18()
+    _cfg18.log_dir = tempfile.mkdtemp(prefix="vauto_selftest18_")
+    _r18 = _R18(_BOS18(capture=_Cap18(_np18.full((2160, 3840, 3), 20, _np18.uint8))), _cfg18)
+    _st18, _sc18 = _r18._where_am_i()
+    ck("全黑/认不出的画面 → 标签是 world（不是乱猜某个页）", _st18 == "world",
+       f"得到 {_st18}")
+    # 【2026-10-04 实测抓到的判据缺陷】panel_search_title 在纯灰/黑屏上也能打 0.909
+    # （阈值 0.696），其余 12 个判据在空屏上都是 0.000 → 它会在"看不见屏幕"时假确认。
+    # 修法：给该判据加 min_std（标定表里的对比度下限）。这条检查保证那个修法没被标定覆盖掉。
+    _d18 = _r18.s.dets.get("panel_search_title")
+    ck("panel_search_title 带 min_std 对比度下限（空屏不再假命中）",
+       _d18 is not None and float(getattr(_d18, "min_std", 0.0)) > 0,
+       f"min_std={None if _d18 is None else getattr(_d18, 'min_std', None)}")
+    if _d18 is not None:
+        _s_flat, _ = _d18.probe(_np18.full((2160, 3840, 3), 200, _np18.uint8))
+        ck("纯灰帧上该判据不再给分（分数为 nan/无效）", not (_s_flat == _s_flat),
+           f"score={_s_flat}")
+    if _p18.is_file():
+        _im18 = _cv18.imdecode(_np18.fromfile(str(_p18), dtype="uint8"), _cv18.IMREAD_COLOR)
+        _st18b, _sc18b = _r18._where_am_i(_im18)
+        ck("车库列表截图 → 标签是 garage_list（带分数可核对）",
+           _st18b == "garage_list",
+           f"得到 {_st18b}  garage={( _sc18b or {}).get('page_title_garage')}")
+    ck("自愈在 replay 下不动手（回放/自检不会乱按键）",
+       _r18.cfg.replay is False and _r18.recover_to_known.__name__ == "recover_to_known", "")
+    _cfg18.auto_recover = False
+    ck("auto_recover=False → 自愈直接放弃（返回 disabled）",
+       _r18.recover_to_known("测试") == "disabled", "")
+except Exception as _e18:
+    ck("状态分类自检可运行", False, repr(_e18))
+
+print("\n⑲ 【2026-10-04 回归】把 change_car 整条扫描链路离线跑一遍（不进游戏、不按键）")
+# 目的：⑭ 是静态检查，⑯ 只验到站绑定；这里把**扫描循环本体**（_adv_before 延迟结算、
+# first_sig 绕回判据、品牌翻页、unreachable 跳过）真跑一遍。
+# 用的是一张固定不变的车库截图 → 光标永远走不动 → 正好落在"走不到"的分支上：
+#   修复后：只记 1 次 grid_target_unreachable 就把这台跳过 → 这一屏没候选 → 翻列 → 翻不动
+#           → 点品牌 → 还是不动 → 收尾（grid_end / all_cars_seen）
+#   修复前：同一台车会被反复选中 nav_budget 次（每台白走 ≤30 次按键）
+try:
+    import numpy as _np19
+    import cv2 as _cv19
+    import json as _json19
+    from flow.config import RunConfig as _RC19
+    from flow.runner import Runner as _R19, build_offline_stack as _BOS19
+
+    class _Cap19:
+        def __init__(self, f):
+            self._f = f
+        def grab(self, region=None):
+            return self._f
+
+    _p19 = pathlib.Path(__file__).resolve().parent / "logs" / "target_r0c3_20261003_115627.png"
+    if not _p19.is_file():
+        print("  --  跳过（没有那张车库列表证据图）")
+    else:
+        _im19 = _cv19.imdecode(_np19.fromfile(str(_p19), dtype="uint8"), _cv19.IMREAD_COLOR)
+        _cfg19 = _RC19()
+        _cfg19.log_dir = tempfile.mkdtemp(prefix="vauto_selftest19_")
+        _cfg19.dry_run = True
+        _cfg19.grid_walk_dwell = 0.01
+        _cfg19.grid_scroll_dwell = 0.01
+        _cfg19.esc_dwell = 0.01
+        _r19 = _R19(_BOS19(capture=_Cap19(_im19)), _cfg19)
+        # 这张证据图已经是"点完「更换车辆」之后的列表"，所以入口那两步点不到磁贴 ——
+        # 我们要测的是**扫描循环本体**，所以把"入口点磁贴/判页"这两步跳过（其余照旧）。
+        _r19.click_match = lambda *a, **k: True
+        _ok19 = _r19.change_car()
+        _rows19 = [_json19.loads(_l) for _l in
+                   open(_r19.log.path, encoding="utf-8") if _l.strip()]
+        _kinds19 = [r["kind"] for r in _rows19]
+        _unreach19 = sum(1 for k in _kinds19 if k == "grid_target_unreachable")
+        ck("整条扫描链路能跑完（没抛异常、有明确收尾）",
+           _ok19 is False and any(k in _kinds19 for k in ("grid_end", "grid_budget", "grid_wrapped")),
+           f"返回 {_ok19}，收尾事件 {[k for k in _kinds19 if k.startswith('grid_')][-3:]}")
+        ck("「走不到」的车只试一次（修复前是 nav_budget 次 = 400）",
+           1 <= _unreach19 <= 3, f"grid_target_unreachable × {_unreach19}")
+        ck("扫描循环本体跑到了（每屏一条 grid_scan + 一条 grid_advance）",
+           _kinds19.count("grid_scan") >= 2 and "grid_advance" in _kinds19,
+           f"grid_scan × {_kinds19.count('grid_scan')}, grid_advance × {_kinds19.count('grid_advance')}")
+        ck("回放/dry-run 下不发任何真实按键（离线自检不进游戏）",
+           _cfg19.dry_run is True, "")
+except Exception as _e19:
+    ck("change_car 离线链路自检可运行", False, repr(_e19))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

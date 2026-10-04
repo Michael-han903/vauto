@@ -140,6 +140,7 @@ class VisualDetector:
         nms_iou: float = 0.35,
         max_results: int = 1,
         name: str = "",
+        min_std: float = 0.0,
     ) -> None:
         self.matcher = matcher
         self.template = template
@@ -154,6 +155,12 @@ class VisualDetector:
         self.nms_iou = float(nms_iou)
         self.max_results = int(max_results)
         self.name = name or "detector"
+        # 【2026-10-04 新增】ROI 灰度标准差下限：低于它就判"这里根本没有可辨认的内容"，
+        # 直接返回"没看到"。起因是实测到 `panel_search_title` 在**纯色/空白**画面上
+        # 也能打 0.909（阈值 0.696）—— TM_CCOEFF_NORMED 对低反差区域会给虚高相关分，
+        # 而黑屏 / 加载中 / 抓错窗口抓到的空桌面正好都是这种画面。
+        # 0 = 关（默认；不改变任何既有判据的行为），按需在标定表里给某个判据打开。
+        self.min_std = float(min_std or 0.0)
 
         self._lock = threading.RLock()
         self._hit_streak = 0
@@ -225,6 +232,8 @@ class VisualDetector:
         """
         if frame is None or frame.ndim < 2:
             return float("nan"), None
+        if self._roi_std(frame) < self.min_std:
+            return float("nan"), None
         src = scaled_frame(frame, self.scale)
         eff_scales = tuple(float(s) * self.scale for s in self.scales)
         region = None if self.roi is None else _scale_region(self.roi, self.scale)
@@ -238,8 +247,29 @@ class VisualDetector:
             score = 1.0 - score
         return score, _match_to_full(hit, self.scale)
 
+    def _roi_std(self, frame: np.ndarray) -> float:
+        """ROI 的灰度标准差（min_std<=0 时直接返回一个大值 = 不做这项检查）。
+
+        为什么用标准差：TM_CCOEFF_NORMED 在**低反差**区域会给出虚高的相关分
+        （实测 panel_search_title 在纯灰帧上 0.909），"这里有没有内容"比"像不像"
+        更基础 —— 空白区域不可能真的长着我们要找的界面元素。
+        """
+        if self.min_std <= 0 or frame is None or frame.ndim < 2:
+            return 1e9
+        if self.roi is not None:
+            x, y, w, h = (int(v) for v in self.roi)
+            sub = frame[max(0, y):y + h, max(0, x):x + w]
+        else:
+            sub = frame
+        if sub.size == 0:
+            return 0.0
+        gray = cv2.cvtColor(sub, cv2.COLOR_BGR2GRAY) if sub.ndim == 3 else sub
+        return float(np.asarray(gray, dtype=np.float64).std())
+
     def _detect_once(self, frame: np.ndarray) -> Optional[Match]:
         if frame is None or frame.ndim < 2:
+            return None
+        if self._roi_std(frame) < self.min_std:
             return None
         src = scaled_frame(frame, self.scale)
         # 关键：模板必须与帧按同一尺度缩放，否则等于拿大模板去找小画面（实测分数会从 1.000 崩到 0.34）。
