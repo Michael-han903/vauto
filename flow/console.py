@@ -337,10 +337,6 @@ class Launcher:
             enable_dpi_awareness()
             from flow.config import RunConfig
             from flow.runner import Runner, build_stack
-            if self.var_awake.get():
-                from flow.keepawake import keep_awake
-                ka = keep_awake(True)
-                print("  [准备] 防息屏/防休眠：" + ("已启用 ✓" if ka.active else "未生效 ✗"))
             from flow.advanced import config_path_near_exe
             from flow.config import load_config as _lc
             _p = config_path_near_exe()
@@ -360,6 +356,16 @@ class Launcher:
                 except Exception:
                     pass
             cfg.__post_init__()                 # 高级项生效（含超时推导）
+            # 防息屏/防休眠（2026-10-04 加强：双 API + 电源计划托管 + 崩溃备份还原）
+            if self.var_awake.get() and bool(getattr(cfg, "keep_awake", True)):
+                from flow.keepawake import keep_awake
+                from pathlib import Path as _P
+                ka = keep_awake(True, strict=True,
+                                plan_guard=bool(getattr(cfg, "power_plan_guard", True)),
+                                backup_path=_P(cfg.ledger_path).parent / "power_plan_backup.json")
+                print("  [准备] 防息屏/防休眠：" + "，".join(
+                    ["API 请求" + ("✓" if ka.active else "✗"),
+                     "电源计划托管=" + str(getattr(ka, "plan_status", "?"))]))
             cfg.dry_run = not bool(self.var_live.get())
             print(f"[+] 配置：阶段={cfg.phase} 轮数={cfg.rounds} 车数={cfg.cars} "
                   f"循环={cfg.cycles} 进赛事={cfg.enter_event} 代码={cfg.share_code} 时长={cfg.round_minutes:g}分 "

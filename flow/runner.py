@@ -232,6 +232,8 @@ class Runner:
             "total_before_sec": float(self.ledger.get("runtime_total_sec", 0.0)),
         }
         self._black_since: Optional[float] = None   # 连续全黑帧起点（防息屏兜底）
+        self._black_last_nudge = 0.0                # 黑屏时上次「轻推鼠标唤醒」的时间
+        self._black_last_note = 0.0                 # 黑屏时上次打印提示的时间（防刷屏）
 
     # ---------------- 台账 ---------------- #
     def _load_ledger(self) -> dict:
@@ -266,32 +268,63 @@ class Runner:
             if not self.s.guard.wait():
                 raise AbortedByUser("等待前台时被中断")
         frame = self.s.capture.grab()
-        # 【2026-10-03 用户实测】"运行时间久了电脑会自己黑屏然后不运行"：
-        # 显示器/系统睡眠后抓到的帧可能是**全黑**（或游戏被挂起）→ 判据全废、逻辑乱走 ✗。
-        # 兜底：纯黑持续 > 3 秒 → 认定屏幕真的黑了（正常过场淡出不会有 3 秒纯黑）→
-        # 打印提示 + 等恢复（最多 300s，可被急停打断）；GUI 上显示"等待屏幕恢复"。
+        # 【2026-10-03 用户实测】"运行时间久了电脑会自己黑屏然后不运行"；
+        # 【2026-10-04 加强·用户要求"黑屏之后依然运行"】：
+        #   ① 黑屏时每 ~20s 轻推 1~2px 鼠标 → 输入活动唤醒处于省电态的显示器；
+        #   ② 画面一恢复立即续跑；等待期间**不碰任何按键**（A 段挑战按住 W 的车继续跑）；
+        #   ③ 最多等 cfg.black_wait_max（默认 900s），全程可 F1 急停。
         if not self.cfg.replay and int(frame[::8, ::8].max()) < 12:
             if self._black_since is None:
                 self._black_since = time.monotonic()
+                self._black_last_nudge = 0.0
+                self._black_last_note = 0.0
             waited = time.monotonic() - self._black_since
             if waited > 3.0:
                 self.status["state"] = "wait_screen"
                 self.status["last"] = "屏幕全黑 → 等待恢复（省电/息屏？）"
-                print(f"  [!] 屏幕全黑已 {waited:.0f}s（息屏/睡眠？）→ 等待恢复，最多再等 300s…")
                 t_wait = time.monotonic()
-                while time.monotonic() - t_wait < 300:
+                t_max = float(getattr(self.cfg, "black_wait_max", 300.0) or 300.0)
+                while time.monotonic() - t_wait < t_max:
                     self.sleep(1.0)
+                    # 轻推鼠标唤醒显示器（只在前台时动；只移动不点击）
+                    if (bool(getattr(self.cfg, "black_wake_nudge", True))
+                            and not self.cfg.dry_run
+                            and time.monotonic() - self._black_last_nudge > 20.0):
+                        self._black_last_nudge = time.monotonic()
+                        self._wake_nudge()
+                    # 提示每 ~30s 一次，别刷屏
+                    if time.monotonic() - self._black_last_note > 30.0:
+                        self._black_last_note = time.monotonic()
+                        print(f"  [!] 屏幕全黑已 {time.monotonic() - self._black_since:.0f}s"
+                              f"（息屏/睡眠？）→ 等待恢复（最多 {t_max:.0f}s，F1 可停）…")
                     f2 = self.s.capture.grab()
                     if int(f2[::8, ::8].max()) >= 12:
                         print("  [i] 屏幕恢复 ✓ 继续")
                         self._black_since = None
                         self.status["state"] = "run"
                         return f2
-                print("  [!] 等了 300s 屏幕仍未恢复 → 按原样继续（后面多半会判据异常）")
+                print(f"  [!] 等了 {t_max:.0f}s 屏幕仍未恢复 → 按原样继续（后面多半会判据异常）")
                 self.status["state"] = "run"
             return frame
         self._black_since = None
         return frame
+
+    def _wake_nudge(self) -> None:
+        """黑屏时轻挪 1~2px 鼠标再归位 —— 输入活动会叫醒省电态的显示器。
+
+        只移动不点击；目标窗口不在前台时绝不动（与按键同一条铁律）。
+        """
+        try:
+            if self.s.guard is not None and not self.s.guard.is_active():
+                return
+            px, py = self.cfg.park_at
+            if self.s.hwnd:
+                px, py = client_to_screen(self.s.hwnd, int(px), int(py))
+            self.s.sim.move_to((px + 2, py + 2), humanize=False)
+            self.s.sim.move_to((px, py), humanize=False)
+            self.log.event("wake_nudge", at=[px, py])
+        except Exception:
+            pass
 
     def observe(self, name: str, frame: np.ndarray):
         return self.s.dets[name].observe(frame)

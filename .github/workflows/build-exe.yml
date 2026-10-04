@@ -56,3 +56,4 @@ jobs:
         with:
           tag_name: v0.1
           files: vauto-win64.zip
+          overwrite_files: true

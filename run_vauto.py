@@ -138,14 +138,19 @@ def main(argv=None) -> int:
         probe_loop(stack, seconds=(args.probe_seconds or None))
         stack.capture.close()
         return 0
-    # 防息屏/防休眠（用户实测过"跑久了黑屏然后不运行"）：默认开
+    # 防息屏/防休眠（用户实测过"跑久了黑屏然后不运行"；2026-10-04 加强：
+    # + PowerSetRequest 双 API + 可选"电源计划托管" + 崩溃备份还原）：默认开
     ka = None
-    if not args.no_keep_awake:
+    if not args.no_keep_awake and bool(getattr(cfg, "keep_awake", True)):
         from flow.keepawake import keep_awake
-        ka = keep_awake(True)
-        print("  [准备] 防息屏/防休眠：" +
-              ("已启用 ✓（显示器常亮、系统不休眠）" if ka.active
-               else "未生效 ✗（非 Windows 或被策略禁用）—— 可手动跑 powercfg 兜底"))
+        from pathlib import Path as _P
+        ka = keep_awake(True, strict=True,
+                        plan_guard=bool(getattr(cfg, "power_plan_guard", True)),
+                        backup_path=_P(cfg.ledger_path).parent / "power_plan_backup.json")
+        _bits = ["API 请求" + ("✓" if ka.active else "✗"),
+                 "电源计划托管=" + str(getattr(ka, "plan_status", "?"))]
+        print("  [准备] 防息屏/防休眠：" + "，".join(_bits) +
+              ("" if ka.active else "（非 Windows 或被策略禁用）—— 可手动跑 powercfg 兜底"))
 
     with stack.stop:
         runner = Runner(stack, cfg)
