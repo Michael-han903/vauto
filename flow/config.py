@@ -128,16 +128,18 @@ class RunConfig:
     # 现在只给这么点固定缓冲，剩下交给 _ensure_vehicle_tab 轮询（它按 Esc + 反复判页）。
     after_enter_car_wait: float = 6.0
     ensure_caps_lock: bool = True       # 开跑前检查大写锁定，关着就打开（用户要求）
-    # ---- 防黑屏/防休眠加强（2026-10-04 用户要求「黑屏之后依然运行」）----
-    keep_awake: bool = True             # 运行期间阻止熄屏/睡眠（SetThreadExecutionState
-                                        # + PowerSetRequest 双 API 保险）
-    power_plan_guard: bool = True       # 再上一道：运行期间把电源计划的
-                                        # 关显示器/睡眠/休眠/硬盘超时改成"从不"，
-                                        # 退出自动还原；崩溃留下的改动下次启动自动还原
-    black_wake_nudge: bool = True       # 黑屏时每 ~20s 轻挪 2px 鼠标主动唤醒显示器
-                                        # （只移动不点击；目标窗口不在前台时不动）
-    black_wait_max: float = 900.0       # 黑屏后最多等待恢复的秒数（等待期间不释放
-                                        # 已按住的键；F1 随时可停）
+    # ---- 挂机防睡（2026-10-04 用户口径：屏幕允许变黑，程序必须继续跑）----
+    keep_awake: bool = True             # 运行期间防「系统睡眠」（双 API 保险）。
+                                        # 注意：默认**不拦截熄屏** —— 15 分钟没操作照常黑屏
+    keep_display_on: bool = False       # True=运行期间还要求屏幕常亮（阻止变黑）。
+                                        # 默认 False：晚上挂机就让它黑，机器照跑
+    power_plan_guard: bool = True       # 再上一道：运行期间把「睡眠/休眠/硬盘超时」改成
+                                        # "从不"（**不碰熄屏时间**）；退出自动还原，
+                                        # 崩溃留下的改动下次启动自动还原
+    black_wake_nudge: bool = False      # 黑屏时是否每 ~20s 轻推 2px 鼠标唤醒屏幕。
+                                        # 默认 False（用户要黑屏挂机）；想主动唤醒再开
+    black_wait_max: float = 0.0         # 抓帧真全黑时最多等多少秒，0=无限等（挂机推荐）
+                                        # 等待期间不释放已按住的键；F1 随时可停
     grid_area: Tuple[int, int, int, int] = (760, 400, 3800, 1900)   # 车格区域（左,上,右,下）
     tile_w_min: int = 560               # 车格宽度范围（实测 636~648，留余量）
     tile_w_max: int = 800

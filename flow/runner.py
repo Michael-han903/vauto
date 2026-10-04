@@ -269,10 +269,11 @@ class Runner:
                 raise AbortedByUser("等待前台时被中断")
         frame = self.s.capture.grab()
         # 【2026-10-03 用户实测】"运行时间久了电脑会自己黑屏然后不运行"；
-        # 【2026-10-04 加强·用户要求"黑屏之后依然运行"】：
-        #   ① 黑屏时每 ~20s 轻推 1~2px 鼠标 → 输入活动唤醒处于省电态的显示器；
-        #   ② 画面一恢复立即续跑；等待期间**不碰任何按键**（A 段挑战按住 W 的车继续跑）；
-        #   ③ 最多等 cfg.black_wait_max（默认 900s），全程可 F1 急停。
+        # 【2026-10-04 用户口径】屏幕**允许**按 15 分钟规则正常变黑（晚上挂机），
+        # 系统睡眠已由 keepawake 按住 —— 这里的兜底只处理"抓帧真的全黑"（看不见）：
+        #   ① 画面一恢复立即续跑；等待期间**不碰任何按键**（A 段挑战按住 W 的车继续跑）；
+        #   ② 等待上限 cfg.black_wait_max（默认 0 = 无限等，挂机模式就该这样），全程 F1 可停；
+        #   ③ 默认不唤醒屏幕（black_wake_nudge=False），要主动唤醒的可开。
         if not self.cfg.replay and int(frame[::8, ::8].max()) < 12:
             if self._black_since is None:
                 self._black_since = time.monotonic()
@@ -283,8 +284,9 @@ class Runner:
                 self.status["state"] = "wait_screen"
                 self.status["last"] = "屏幕全黑 → 等待恢复（省电/息屏？）"
                 t_wait = time.monotonic()
-                t_max = float(getattr(self.cfg, "black_wait_max", 300.0) or 300.0)
-                while time.monotonic() - t_wait < t_max:
+                t_max = float(getattr(self.cfg, "black_wait_max", 0.0) or 0.0)
+                _infinite = t_max <= 0
+                while _infinite or (time.monotonic() - t_wait < t_max):
                     self.sleep(1.0)
                     # 轻推鼠标唤醒显示器（只在前台时动；只移动不点击）
                     if (bool(getattr(self.cfg, "black_wake_nudge", True))
@@ -295,15 +297,17 @@ class Runner:
                     # 提示每 ~30s 一次，别刷屏
                     if time.monotonic() - self._black_last_note > 30.0:
                         self._black_last_note = time.monotonic()
+                        _cap = "无限等" if _infinite else f"最多 {t_max:.0f}s"
                         print(f"  [!] 屏幕全黑已 {time.monotonic() - self._black_since:.0f}s"
-                              f"（息屏/睡眠？）→ 等待恢复（最多 {t_max:.0f}s，F1 可停）…")
+                              f"（息屏/睡眠？）→ 等待恢复（{_cap}，F1 可停）…")
                     f2 = self.s.capture.grab()
                     if int(f2[::8, ::8].max()) >= 12:
                         print("  [i] 屏幕恢复 ✓ 继续")
                         self._black_since = None
                         self.status["state"] = "run"
                         return f2
-                print(f"  [!] 等了 {t_max:.0f}s 屏幕仍未恢复 → 按原样继续（后面多半会判据异常）")
+                if not _infinite:
+                    print(f"  [!] 等了 {t_max:.0f}s 屏幕仍未恢复 → 按原样继续（后面多半会判据异常）")
                 self.status["state"] = "run"
             return frame
         self._black_since = None

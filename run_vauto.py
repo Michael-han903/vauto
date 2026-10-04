@@ -144,12 +144,14 @@ def main(argv=None) -> int:
     if not args.no_keep_awake and bool(getattr(cfg, "keep_awake", True)):
         from flow.keepawake import keep_awake
         from pathlib import Path as _P
-        ka = keep_awake(True, strict=True,
+        _disp = bool(getattr(cfg, "keep_display_on", False))
+        ka = keep_awake(True, strict=True, keep_display_on=_disp,
                         plan_guard=bool(getattr(cfg, "power_plan_guard", True)),
                         backup_path=_P(cfg.ledger_path).parent / "power_plan_backup.json")
-        _bits = ["API 请求" + ("✓" if ka.active else "✗"),
+        _bits = ["防系统睡眠" + ("✓" if ka.active else "✗"),
+                 ("屏幕常亮=开" if _disp else "屏幕可黑=是（15 分钟规则保留）"),
                  "电源计划托管=" + str(getattr(ka, "plan_status", "?"))]
-        print("  [准备] 防息屏/防休眠：" + "，".join(_bits) +
+        print("  [准备] 挂机模式：" + "，".join(_bits) +
               ("" if ka.active else "（非 Windows 或被策略禁用）—— 可手动跑 powercfg 兜底"))
 
     with stack.stop:

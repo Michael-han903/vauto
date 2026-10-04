@@ -356,15 +356,17 @@ class Launcher:
                 except Exception:
                     pass
             cfg.__post_init__()                 # 高级项生效（含超时推导）
-            # 防息屏/防休眠（2026-10-04 加强：双 API + 电源计划托管 + 崩溃备份还原）
+            # 挂机防睡（2026-10-04 用户口径：屏幕允许变黑，程序必须继续跑）
             if self.var_awake.get() and bool(getattr(cfg, "keep_awake", True)):
                 from flow.keepawake import keep_awake
                 from pathlib import Path as _P
-                ka = keep_awake(True, strict=True,
+                _disp = bool(getattr(cfg, "keep_display_on", False))
+                ka = keep_awake(True, strict=True, keep_display_on=_disp,
                                 plan_guard=bool(getattr(cfg, "power_plan_guard", True)),
                                 backup_path=_P(cfg.ledger_path).parent / "power_plan_backup.json")
-                print("  [准备] 防息屏/防休眠：" + "，".join(
-                    ["API 请求" + ("✓" if ka.active else "✗"),
+                print("  [准备] 挂机模式：" + "，".join(
+                    ["防系统睡眠" + ("✓" if ka.active else "✗"),
+                     ("屏幕常亮=开" if _disp else "屏幕可黑=是（15 分钟规则保留）"),
                      "电源计划托管=" + str(getattr(ka, "plan_status", "?"))]))
             cfg.dry_run = not bool(self.var_live.get())
             print(f"[+] 配置：阶段={cfg.phase} 轮数={cfg.rounds} 车数={cfg.cars} "

@@ -10,12 +10,13 @@
   * 某些驱动/策略会**忽略**一次性的电源请求 → 需要多道保险。
 
 四道保险（全是电源管理 API，**不碰游戏进程**，符合工具层契约）：
-  1) `SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED|ES_SYSTEM_REQUIRED)`
-     —— 按线程生效：用常驻后台线程持有 + 周期续订（有些驱动会漏掉一次性设置）；
+  1) `SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED[, ES_DISPLAY_REQUIRED])`
+     —— 按线程生效：常驻线程持有 + 周期续订；**默认只防"系统睡眠"、不拦熄屏**
+     （2026-10-04 用户要求：晚上挂机就要让屏幕正常变黑、程序照跑）；
   2) `PowerSetRequest(PowerRequestDisplayRequired/SystemRequired)`
      —— Vista+ 的正式 API，与 1 相互独立，双保险；
-  3) 可选**电源计划托管**（plan_guard）：运行期间把当前计划的
-     关显示器 / 睡眠 / 休眠 / 硬盘超时改成"从不"，退出时**自动还原**；
+  3) 可选**电源计划托管**（plan_guard）：运行期间把「睡眠 / 休眠 / 硬盘超时」改成"从不"
+     （**不碰熄屏时间** —— 屏幕该黑还黑），退出时**自动还原**；
      若程序崩溃没来得及还原：备份留在 logs/power_plan_backup.json，
      **下次启动自动还原**后重新托管（不残留系统改动）；
   4) 配合 runner 的「黑屏检测 + 轻推鼠标唤醒 + 恢复即续跑」（见 runner.frame）。
@@ -39,7 +40,10 @@ from pathlib import Path
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 ES_DISPLAY_REQUIRED = 0x00000002
-_FLAGS = ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+# 【2026-10-04 用户口径】默认**只防"系统睡眠"、不拦熄屏**：
+#   晚上挂机 → 屏幕该黑就黑（15 分钟规则保留），但机器绝不睡、程序照跑。
+# 需要"屏幕也常亮"时才加 ES_DISPLAY_REQUIRED（keep_display_on=True）。
+_BASE_FLAGS = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
 
 # ---- PowerSetRequest 常量 ----
 _PRC_VERSION = 0
@@ -109,7 +113,7 @@ def _query_index(kind: str, sub: str, guid: str):
 
 
 class PowerPlanGuard:
-    """运行期间把电源计划改成"永不熄屏/不睡眠"，退出还原；崩溃有备份兜底。"""
+    """运行期间把电源计划的「睡眠/休眠/硬盘超时」改成"从不"（不碰熄屏），退出还原；崩溃有备份兜底。"""
 
     def __init__(self, backup_path: Path | str):
         self.backup_path = Path(backup_path)
@@ -128,6 +132,9 @@ class PowerPlanGuard:
             return "unsupported"                      # 查不到 → 别乱改
         changed = False
         for key, pfx in _CHANGE.items():
+            if key == "monitor":
+                continue        # 【2026-10-04 用户要求】熄屏时间**不动**：
+                                # 晚上挂机就让屏幕按 15 分钟规则正常变黑
             for ch in ("ac", "dc"):
                 if cur[key][ch] is None:
                     continue
@@ -184,9 +191,12 @@ class KeepAwake:
     """持有"防息屏/防休眠"请求的后台组件。用法：k = KeepAwake(...); k.start(); …; k.stop()"""
 
     def __init__(self, interval: float = 30.0, strict: bool = True,
-                 plan_guard: bool = False, backup_path: Path | str | None = None):
+                 keep_display_on: bool = False, plan_guard: bool = False,
+                 backup_path: Path | str | None = None):
         self.interval = float(interval)
         self.strict = bool(strict)                    # 是否启用 PowerSetRequest 双保险
+        self.keep_display_on = bool(keep_display_on)  # True=屏幕也常亮；默认 False=只防睡眠、允许黑屏
+        self._flags = _BASE_FLAGS | (ES_DISPLAY_REQUIRED if self.keep_display_on else 0)
         self.active = False                           # 第 1 道（SetThreadExecutionState）是否生效
         self.power_ok = False                         # 第 2 道（PowerSetRequest）是否生效
         self.plan_status = "off"                      # 第 3 道：off / guarded / unsupported
@@ -209,10 +219,12 @@ class KeepAwake:
             h = k.PowerCreateRequest(ctypes.byref(ctx))
             if not h:
                 return False
-            ok1 = bool(k.PowerSetRequest(ctypes.c_void_p(h), _REQ_DISPLAY))
             ok2 = bool(k.PowerSetRequest(ctypes.c_void_p(h), _REQ_SYSTEM))
+            ok1 = True
+            if self.keep_display_on:
+                ok1 = bool(k.PowerSetRequest(ctypes.c_void_p(h), _REQ_DISPLAY))
             self._h = h
-            return ok1 or ok2
+            return ok2 and ok1
         except Exception:
             return False
 
@@ -223,7 +235,8 @@ class KeepAwake:
         try:
             k = ctypes.windll.kernel32                 # type: ignore[attr-defined]
             k.PowerClearRequest.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            k.PowerClearRequest(ctypes.c_void_p(h), _REQ_DISPLAY)
+            if self.keep_display_on:
+                k.PowerClearRequest(ctypes.c_void_p(h), _REQ_DISPLAY)
             k.PowerClearRequest(ctypes.c_void_p(h), _REQ_SYSTEM)
             k.CloseHandle.argtypes = [ctypes.c_void_p]
             k.CloseHandle(ctypes.c_void_p(h))
@@ -238,12 +251,12 @@ class KeepAwake:
 
         def _loop() -> None:
             # 在第 1 道请求必须由存活线程持有（ES_CONTINUOUS 挂在本线程上）
-            ok = _set(_FLAGS)
+            ok = _set(self._flags)
             if ok:
                 self.active = True
             started.set()
             while ok and not self._stop.wait(self.interval):
-                _set(_FLAGS)                          # 周期续订，防被忽略
+                _set(self._flags)                     # 周期续订，防被忽略
             _set(ES_CONTINUOUS)                       # 退出前清掉本线程的请求
 
         self._th = threading.Thread(target=_loop, daemon=True, name="vauto-keepawake")
@@ -264,9 +277,10 @@ class KeepAwake:
         self.active = False
 
 
-def keep_awake(enable: bool = True, strict: bool = True, plan_guard: bool = False,
-               backup_path: Path | str | None = None) -> KeepAwake:
-    k = KeepAwake(strict=strict, plan_guard=plan_guard, backup_path=backup_path)
+def keep_awake(enable: bool = True, strict: bool = True, keep_display_on: bool = False,
+               plan_guard: bool = False, backup_path: Path | str | None = None) -> KeepAwake:
+    k = KeepAwake(strict=strict, keep_display_on=keep_display_on,
+                  plan_guard=plan_guard, backup_path=backup_path)
     if enable:
         k.start()
     return k
