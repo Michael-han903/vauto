@@ -161,7 +161,16 @@ try:
     ck("client<->screen 互转自洽", (bx, by) == (10, 10), f"->({cx},{cy})->({bx},{by})")
     pw = cap.grab_printwindow()
     nonblack = float((pw.reshape(-1, pw.shape[2]).mean(axis=1) > 8).mean())
-    ck("PrintWindow 备选抓帧可用（非全黑）", nonblack > 0.05, f"非黑像素占比={nonblack:.2%}")
+    # 【2026-10-04 修】游戏没开时这一步抓到的是自己/桌面窗口，必然接近全黑 → 以前会**假报失败**，
+    # 让人分不清"代码回归"还是"游戏没开"。游戏不在就只提示跳过。
+    try:
+        _game_up = bool(find_window_by_title("Forza Horizon"))
+    except Exception:
+        _game_up = False
+    if not _game_up:
+        print(f"  SKIP  PrintWindow 备选抓帧可用（非全黑）  游戏未运行，跳过  非黑={nonblack:.2%}")
+    else:
+        ck("PrintWindow 备选抓帧可用（非全黑）", nonblack > 0.05, f"非黑像素占比={nonblack:.2%}")
 except WindowUnavailable as e:
     ck("WindowCapture.grab", False, repr(e))
 cap.close()
