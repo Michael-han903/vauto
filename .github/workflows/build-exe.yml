@@ -1,14 +1,23 @@
 name: 打包 Windows exe
 
 # 触发方式：
-#   1) 手动：仓库页 Actions → 本工作流 → Run workflow（或 API workflow_dispatch）
-#   2) 打 tag：git push origin v0.2 之类 → 自动构建并挂到同名 Release
+#   1) 手动：仓库页 Actions → 本工作流 → Run workflow（或 API workflow_dispatch），
+#      可填要发布的版本号（默认 v0.2）
+#   2) 打 tag：git push origin v0.2 → 自动构建，版本号取 tag 名
 #
 # 产物：vauto-win64.zip（即 dist/vauto 整个文件夹），构建产物在 Actions 页可随时下载，
-#       同时自动挂到 Release。整个过程在 GitHub 的 Windows 服务器上完成，无需本地打包上传。
+#       同时自动挂到同名 Release。整个过程在 GitHub 的 Windows 服务器上完成，无需本地打包上传。
+#
+# 【2026-10-04 v0.2】新增"打包后立刻跑一次离线自检"的门禁：exe 打出来先自己验证判据/流程
+# 能跑通，再压缩上传 —— 坏包不会挂到 Release 上（以前靠人本地验）。
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号（v0.2 这种格式）'
+        required: true
+        default: 'v0.2'
   push:
     tags: ["v*"]
 
@@ -37,9 +46,13 @@ jobs:
       - name: PyInstaller 打包
         run: python build_exe.py
 
+      - name: 门禁：打出来的 exe 先离线自检一次
+        run: ./dist/vauto/vauto.exe --selftest
+
       - name: 压缩为单文件
         shell: pwsh
         run: |
+          Remove-Item vauto-win64.zip -ErrorAction SilentlyContinue
           Compress-Archive -Path dist/vauto -DestinationPath vauto-win64.zip -Force
           Get-Item vauto-win64.zip | Select-Object Name, Length
 
@@ -50,10 +63,20 @@ jobs:
           path: vauto-win64.zip
           retention-days: 30
 
+      - name: 决定版本号
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 挂到 Release
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: vauto-win64.zip
           overwrite_files: true

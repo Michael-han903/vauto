@@ -130,7 +130,11 @@ print("\n== ⑤ 换车验证信号：名条判不出来，列表区域判得出�
 # 用 golden_frames/garage_list 里 44 张连续帧（用户当时正在按方向键）验证：
 #   名条均差全为 0.00；列表区域分块最大差 18~152（阈值 6.0 有 3 倍余量）。
 _gf = Path(__file__).resolve().parent / "golden_frames" / "garage_list"
-_frames = sorted(_gf.glob("*.png")) if _gf.is_dir() else []
+# 【2026-10-04】cleanup.py 把大场景里除前 3 张外的无损 PNG 转成了 JPEG（省 800MB）
+# → 这里必须 .png/.jpg 都收，否则"只有 3 张"直接判失败。
+_frames = sorted(p for p in _gf.iterdir()
+                 if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")) \
+    if _gf.is_dir() else []
 if len(_frames) < 5:
     ck("车库列表帧可用（golden_frames/garage_list）", False, f"只有 {len(_frames)} 张")
 else:
@@ -212,7 +216,9 @@ try:
         ck("不同车：差异远大于阈值", min(_others.values()) > _cfg.fp_same_tol * 2,
            f"最小 {min(_others.values()):.2f}（{min(_others, key=_others.get)}）")
     # 录屏帧里也要认得出来（框必须完整才认，滚动中间态宁可不认）
-    _fs = sorted(_glob.glob(str(_ROOT) + r"\golden_frames\garage_list\*.png"))
+    # （.png/.jpg 都收：大场景的帧已被 cleanup.py 转成 JPEG 省空间）
+    _fs = sorted(p for p in (_ROOT / "golden_frames" / "garage_list").iterdir()
+                 if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"))
     _ok = sum(1 for _f in _fs[:12]
               if _r._selected_tile_title(_load_img(_f)) is not None)
     ck("录屏车库帧里也认得出选中格", _ok >= 6, f"{_ok}/12 帧")
@@ -606,6 +612,22 @@ try:
         _s_flat, _ = _d18.probe(_np18.full((2160, 3840, 3), 200, _np18.uint8))
         ck("纯灰帧上该判据不再给分（分数为 nan/无效）", not (_s_flat == _s_flat),
            f"score={_s_flat}")
+    # 【2026-10-04 重做】旧模板几乎是一整条纯柠檬绿按钮 → 在任何带柠檬绿的真实界面上都虚高
+    # （剧情页 0.877、车库列表 0.789、挑战结算 0.909，全超过阈值 0.696 = 永远命中）。
+    # 新模板只裁「搜索」两个字 → 真面板 1.000、剧情页/比赛菜单/车库列表都 < 0.18。
+    _p_ev = (pathlib.Path(os.environ.get("HERMES_HOME", ".")) / "images"
+             / "upload_20261004_222623_1.png")
+    _p_panel = pathlib.Path(__file__).resolve().parent / "golden_frames" / "event_entry" / "entry_05.png"
+    if _d18 is not None and _p_panel.is_file():
+        _im_panel = _cv18.imdecode(_np18.fromfile(str(_p_panel), dtype="uint8"), _cv18.IMREAD_COLOR)
+        _sp, _ = _d18.probe(_im_panel)
+        ck("真「搜索面板」上命中（判据仍然管用）", _sp == _sp and _sp >= _d18.threshold,
+           f"score={_sp:.3f}")
+        if _p_ev.is_file():
+            _im_st = _cv18.imdecode(_np18.fromfile(str(_p_ev), dtype="uint8"), _cv18.IMREAD_COLOR)
+            _ss, _ = _d18.probe(_im_st)
+            ck("正常剧情页上**不**命中（旧模板在这里 0.877）",
+               not (_ss == _ss and _ss >= _d18.threshold), f"score={_ss:.3f}")
     if _p18.is_file():
         _im18 = _cv18.imdecode(_np18.fromfile(str(_p18), dtype="uint8"), _cv18.IMREAD_COLOR)
         _st18b, _sc18b = _r18._where_am_i(_im18)
@@ -672,6 +694,216 @@ try:
            _cfg19.dry_run is True, "")
 except Exception as _e19:
     ck("change_car 离线链路自检可运行", False, repr(_e19))
+
+print("\n⑳ 【2026-10-04 新增】焦点进出：切出关大写锁定 / 切回开回来 + 鼠标归位 + 认出界面")
+# 用户原话："我有的时候会把屏幕焦点切出去做一些别的，但是软件在我再次回来之后就不识别了，
+# 当我切出去的时候自动解除大写锁定，切回来的时候再自动开启，并且检测鼠标位置，把鼠标归位，
+# 关闭程序的时候也关掉 caps"。
+# 这里**不碰真实键盘**：caps_lock_on / set_caps_lock / force_caps_off 全部换成记录器。
+try:
+    import numpy as _np20
+    import json as _json20
+
+    import vauto.focus as _vf20
+    _live20 = {"fg": False}
+    _orig_alive20, _orig_fg20 = _vf20.is_window_alive, _vf20.is_foreground
+    _vf20.is_window_alive = lambda h: True
+    _vf20.is_foreground = lambda *a, **k: _live20["fg"]
+    try:
+        _calls20 = []
+        _g20 = _vf20.FocusGuard(1,
+                                on_lose_focus=lambda: _calls20.append("out"),
+                                on_gain_focus=lambda: _calls20.append("in"))
+        _g20.is_active()                      # 第一次：只建立基线，不该通知
+        _live20["fg"] = True
+        _g20.is_active()                      # 切回来
+        _g20.is_active(); _g20.is_active()    # 状态没变 → 不该重复通知
+        _live20["fg"] = False
+        _g20.is_active()                      # 切出去
+        ck("焦点守卫只在状态**真的翻转**时通知（重复不通知）",
+           _calls20 == ["in", "out"], f"通知序列 {_calls20}")
+    finally:
+        _vf20.is_window_alive, _vf20.is_foreground = _orig_alive20, _orig_fg20
+
+    import flow.runner as _fr20
+    from flow.config import RunConfig as _RC20
+    from flow.runner import Runner as _R20, build_offline_stack as _BOS20
+
+    class _Cap20:
+        def __init__(self, f):
+            self._f = f
+        def grab(self, region=None):
+            return self._f
+
+    _orig_on20, _orig_set20, _orig_force20 = (_fr20.caps_lock_on, _fr20.set_caps_lock,
+                                              _fr20.force_caps_off)
+    _caps20 = {"on": True, "calls": []}
+    try:
+        _fr20.caps_lock_on = lambda: _caps20["on"]
+        def _fake_set20(on):
+            _caps20["calls"].append(("set", bool(on)))
+            _caps20["on"] = bool(on)
+            return _caps20["on"]
+        _fr20.set_caps_lock = _fake_set20
+        def _fake_force20():
+            _caps20["calls"].append(("force_off",))
+            _caps20["on"] = False
+            return False
+        _fr20.force_caps_off = _fake_force20
+
+        _frame20 = _np20.full((2160, 3840, 3), 200, _np20.uint8)
+        _cfg20 = _RC20()
+        _cfg20.log_dir = tempfile.mkdtemp(prefix="vauto_selftest20_")
+        _cfg20.dry_run = False               # 走真实分支（但按键全被换成记录器）
+        _r20 = _R20(_BOS20(capture=_Cap20(_frame20)), _cfg20)
+
+        _r20._on_focus_lost()
+        ck("切出游戏 → 大写锁定被关掉", _caps20["calls"][-1] == ("set", False),
+           f"{_caps20['calls']}")
+        _caps20["calls"].clear()
+        _r20._on_focus_gained()
+        ck("切回来 → 大写锁定被开回", ("set", True) in _caps20["calls"], f"{_caps20['calls']}")
+        _rows20 = [_json20.loads(_l) for _l in
+                   open(_r20.log.path, encoding="utf-8") if _l.strip()]
+        _kinds20 = [r["kind"] for r in _rows20]
+        ck("切回来记了 focus_gained（含离开时长/鼠标位置/界面判定）",
+           "focus_gained" in _kinds20
+           and any(r.get("state") for r in _rows20 if r["kind"] == "focus_gained"),
+           f"事件 {[k for k in _kinds20 if k.startswith('focus')]}")
+        ck("切回来顺手把鼠标归了位（park_pointer 事件）", "park_pointer" in _kinds20,
+           f"{[k for k in _kinds20 if k.startswith('park')]}")
+        _caps20["calls"].clear()
+        _r20._caps_restore_on_exit()
+        ck("退出程序 → 大写锁定被关掉", ("force_off",) in _caps20["calls"],
+           f"{_caps20['calls']}")
+
+        # 安全性质：dry-run（演练）时**绝不动键盘**
+        _cfg20b = _RC20()
+        _cfg20b.log_dir = tempfile.mkdtemp(prefix="vauto_selftest20b_")
+        _cfg20b.dry_run = True
+        _r20b = _R20(_BOS20(capture=_Cap20(_frame20)), _cfg20b)
+        _caps20["calls"].clear()
+        _r20b._on_focus_lost(); _r20b._on_focus_gained(); _r20b._caps_restore_on_exit()
+        ck("dry-run 下这三个动作一个键都不发（演练不碰键盘）",
+           _caps20["calls"] == [], f"{_caps20['calls']}")
+
+        # 开关能关掉
+        _cfg20c = _RC20()
+        _cfg20c.log_dir = tempfile.mkdtemp(prefix="vauto_selftest20c_")
+        _cfg20c.dry_run = False
+        _cfg20c.caps_lock_follow_focus = False
+        _cfg20c.caps_off_on_exit = False
+        _r20c = _R20(_BOS20(capture=_Cap20(_frame20)), _cfg20c)
+        _caps20["calls"].clear()
+        _r20c._on_focus_lost(); _r20c._on_focus_gained(); _r20c._caps_restore_on_exit()
+        ck("三个开关关掉后就不动大写锁定了", _caps20["calls"] == [], f"{_caps20['calls']}")
+    finally:
+        _fr20.caps_lock_on, _fr20.set_caps_lock, _fr20.force_caps_off = (
+            _orig_on20, _orig_set20, _orig_force20)
+except Exception as _e20:
+    ck("焦点进出自检可运行", False, repr(_e20))
+
+print("\n㉑ 【2026-10-04 新增】「赛事暂停菜单」（比赛里按 Esc／切出去再回来）——用户截图实测标定")
+# 用户给的 5 张图里，图五是"在比赛界面切出去再回来"看到的样子：「重新开始赛事 / 退出赛事」
+# 磁贴。他说"重点锚点可能是 重新开始赛事 与 退出赛事"。这两个判据就是照他指的锚点建的。
+try:
+    import numpy as _np21
+    import cv2 as _cv21
+    import json as _json21
+    from flow.config import RunConfig as _RC21
+    from flow.runner import Runner as _R21, build_offline_stack as _BOS21
+
+    class _Cap21:
+        def __init__(self, imgs):
+            self._imgs = list(imgs)
+            self.i = 0
+        def grab(self, region=None):
+            im = self._imgs[min(self.i, len(self._imgs) - 1)]
+            self.i += 1
+            return im
+
+    _IMG21 = pathlib.Path(os.environ.get("HERMES_HOME", ".")) / "images"
+    _p5 = _IMG21 / "upload_20261004_222623_5.png"      # 正样本：比赛菜单
+    _p1 = _IMG21 / "upload_20261004_222623_1.png"      # 关键负样本：正常的剧情页
+    if not (_p5.is_file() and _p1.is_file()):
+        print("  --  跳过（没有那两张用户截图）")
+    else:
+        _im5 = _cv21.imdecode(_np21.fromfile(str(_p5), dtype="uint8"), _cv21.IMREAD_COLOR)
+        _im1 = _cv21.imdecode(_np21.fromfile(str(_p1), dtype="uint8"), _cv21.IMREAD_COLOR)
+        ck("两张用户截图都是原生 3840x2160（模板坐标不用缩放）",
+           _im5.shape[:2] == (2160, 3840) and _im1.shape[:2] == (2160, 3840),
+           f"{_im5.shape[:2]} / {_im1.shape[:2]}")
+
+        _cfg21 = _RC21()
+        _cfg21.log_dir = tempfile.mkdtemp(prefix="vauto_selftest21_")
+        _cfg21.dry_run = True
+        _r21 = _R21(_BOS21(capture=_Cap21([_im5])), _cfg21)
+        for _nm in ("tile_restart_event", "tile_exit_event"):
+            _d = _r21.s.dets.get(_nm)
+            if _d is None:
+                ck(f"判据 {_nm} 已装配（DETECTORS 名单里有）", False, "没装配 → 会 KeyError")
+                continue
+            _s5, _ = _d.probe(_im5)
+            _s1, _ = _d.probe(_im1)
+            ck(f"{_nm}：用户截图上命中、正常剧情页上不命中",
+               _s5 == _s5 and _s5 >= _d.threshold and not (_s1 == _s1 and _s1 >= _d.threshold),
+               f"比赛菜单 {_s5:.3f}（阈值 {_d.threshold:.3f}）/ 剧情页 {_s1:.3f}")
+
+        _st5, _sc5 = _r21._where_am_i(_im5)
+        _st1, _sc1 = _r21._where_am_i(_im1)
+        ck("界面判定：图五 = event_menu（比赛菜单）", _st5 == "event_menu", f"得到 {_st5}")
+        ck("界面判定：图一 = story_menu（正常剧情页，没被误判成比赛菜单）",
+           _st1 == "story_menu", f"得到 {_st1}")
+
+        # 自愈动作：在比赛菜单里应该按"返回"键（默认 Esc），**绝不能按回车**
+        _cfg21b = _RC21()
+        _cfg21b.log_dir = tempfile.mkdtemp(prefix="vauto_selftest21b_")
+        _cfg21b.dry_run = False
+        _cfg21b.esc_dwell = 0.01
+        _sim21 = _BOS21(capture=_Cap21([_im5]))
+        _r21b = _R21(_sim21, _cfg21b)
+        _r21b._where_am_i = lambda *a, **k: ("event_menu", {})
+        _r21b.recover_to_known("测试", rounds=1)
+        _acts21 = [a for a in getattr(_sim21.sim, "held", [])]
+        ck("自愈在比赛菜单里按的是「返回」键（Esc），不是回车",
+           any(a[0] == "tap" and a[1] == "esc" for a in _acts21)
+           and not any(a[0] == "tap" and a[1] == "enter" for a in _acts21),
+           f"动作 {_acts21}")
+
+        # 集成：A 阶段轮询中认到比赛菜单 → 自动回比赛（而不是等满看门狗）
+        _cfg21c = _RC21()
+        _cfg21c.log_dir = tempfile.mkdtemp(prefix="vauto_selftest21c_")
+        _cfg21c.dry_run = False
+        _cfg21c.round_minutes = 0
+        _cfg21c.round_timeout = 1.0
+        _cfg21c.round_settle_before = 0.3
+        _cfg21c.round_active_wait = 0.3
+        _cfg21c.poll = 0.05
+        _cfg21c.watchdog_idle = 0
+        _cfg21c.esc_dwell = 0.01
+        _cfg21c.max_polls_per_round = 4
+        _st21c = _BOS21(capture=_Cap21([_im5] * 40))
+        _r21c = _R21(_st21c, _cfg21c)
+        _out21 = _r21c.farm_one_round(retry=False)
+        _rows21c = [_json21.loads(_l) for _l in
+                    open(_r21c.log.path, encoding="utf-8") if _l.strip()]
+        _kinds21c = [r["kind"] for r in _rows21c]
+        ck("A 阶段轮询里认到比赛菜单就按返回键（不再干等结算判据）",
+           "event_menu_detected" in _kinds21c
+           and any(a[0] == "tap" and a[1] == "esc" for a in _st21c.sim.held),
+           f"返回 {_out21}；事件 {[k for k in _kinds21c if 'event' in k or k == 'press'][:6]}")
+        # 【2026-10-04 用户口径】"Esc 回到比赛之后继续按 W 直到比赛结束" → 返回后必须重新按住 W，
+        # 而不是继续用菜单弹出前那次（游戏恢复后不一定还认它仍按着）。
+        _esc_at21 = next((i for i, a in enumerate(_st21c.sim.held)
+                          if a[0] == "tap" and a[1] == "esc"), None)
+        # 桩把「按住」记成 ("down", key)（见 _NoSim.key_down）
+        _w_after21 = None if _esc_at21 is None else [
+            a for a in _st21c.sim.held[_esc_at21 + 1:] if a[0] == "down"]
+        ck("返回比赛后**重新按住 W**（保证游戏收到新的 keydown，一直按到比赛结束）",
+           bool(_w_after21) and any(_cfg21c.hold_key in a[1] for a in _w_after21),
+           f"Esc 之后的动作 {_w_after21}")
+except Exception as _e21:
+    ck("比赛菜单自检可运行", False, repr(_e21))
 
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

@@ -168,6 +168,8 @@ class FocusGuard:
         poll: float = 0.05,
         stop_event: Optional[threading.Event] = None,
         verbose: bool = False,
+        on_lose_focus: Optional[Callable[[], None]] = None,
+        on_gain_focus: Optional[Callable[[], None]] = None,
     ) -> None:
         self.hwnd = int(hwnd)
         self.deep = bool(deep)
@@ -176,13 +178,43 @@ class FocusGuard:
         self.stop_event = stop_event
         self.verbose = bool(verbose)
         self.paused_total = 0.0     # 累计因后台暂停的秒数（统计用）
+        # 【2026-10-04 用户要求】焦点进出时要通知业务层做两件事：
+        #   切出去 → 关掉 Caps Lock（否则他在别的程序里打字全是大写）；
+        #   切回来 → 开回 Caps Lock + 鼠标归位 + 重新判"我在哪一屏"。
+        self.on_lose_focus = on_lose_focus
+        self.on_gain_focus = on_gain_focus
+        self._was_active: Optional[bool] = None   # 上一次已知的前台状态（None=还没测过）
+        self._firing = False                      # 防回调里再触发回调（重入）
 
     # ------------------------------------------------------------------ #
+    def _fire_transition(self, active: bool) -> None:
+        """前台状态**真的翻转**时通知一次回调（重复状态不通知）。
+
+        注意：先更新 _was_active 再调回调 —— 回调里若又调 is_active()（比如"重新判我在哪"
+        会抓帧），不会形成递归。
+        """
+        prev, self._was_active = self._was_active, active
+        if prev is None or prev == active or self._firing:
+            return
+        cb = self.on_gain_focus if active else self.on_lose_focus
+        if cb is None:
+            return
+        self._firing = True
+        try:
+            cb()
+        except Exception:
+            pass
+        finally:
+            self._firing = False
+
     def is_active(self) -> bool:
         """非阻塞查询：目标窗口是否在前台且窗口仍存活。"""
         if not is_window_alive(self.hwnd):
-            return False
-        return is_foreground(self.hwnd, deep=self.deep, strict_process=self.strict_process)
+            active = False
+        else:
+            active = is_foreground(self.hwnd, deep=self.deep, strict_process=self.strict_process)
+        self._fire_transition(active)
+        return active
 
     def require(self) -> None:
         """不在前台 -> 抛 NotForeground（供「每步动作前守卫」的写法）。"""
@@ -223,6 +255,10 @@ class FocusGuard:
             on_pause=_pause,
         )
         self.paused_total += time.monotonic() - start
+        if ok:
+            # 【2026-10-04】一回来就立刻通知（不等下一次 is_active）—— 用户切回来时
+            # 需要马上"开回大写锁定 + 鼠标归位 + 重新认界面"，晚一步就可能先按错键。
+            self._fire_transition(True)
         return ok
 
     def blocking_loop_allowed(self) -> bool:

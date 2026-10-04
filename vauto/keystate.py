@@ -45,4 +45,19 @@ def set_caps_lock(on: bool = True) -> bool:
         return caps_lock_on()
 
 
-__all__ = ["VK_CAPITAL", "caps_lock_on", "set_caps_lock"]
+def force_caps_off() -> bool:
+    """收尾用：把 Caps Lock 关掉，返回最终状态（已经是关的就什么都不做）。
+
+    【2026-10-04 用户要求】"关闭程序的时候也关掉 caps" —— 无论是 F1 急停、点「停止」、
+    还是直接关控制台窗口，退出后都不应该把用户的键盘留在大写锁定状态。
+    调用点：`Runner.run()` 的 finally（覆盖前两种）+ 控制台 `_on_close`（第三种会
+    `os._exit`，跑不到 finally）。
+    """
+    try:
+        set_caps_lock(False)
+    except Exception:
+        pass
+    return caps_lock_on()
+
+
+__all__ = ["VK_CAPITAL", "caps_lock_on", "set_caps_lock", "force_caps_off"]

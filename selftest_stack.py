@@ -173,7 +173,11 @@ import win32gui as _wg
 _fg = _wg.GetForegroundWindow()
 ck("FocusGuard 前台放行", FocusGuard(_fg).is_active())
 ck("FocusGuard.require 前台不抛异常", (lambda: (FocusGuard(_fg).require(), True)[1])())
-_notfg = next((h for h, _t, _c in list_windows() if h != _fg), None)
+_notfg = next((h for h, _t, _c in list_windows()
+               if h != _fg and not FocusGuard(h).is_active()), None)
+# 【2026-10-04 修偶发】原来只挑"hwnd != 前台 hwnd"的窗口，但有些枚举出来的 hwnd 是前台
+# 窗口的**子窗口/属主窗口**，守卫会把它们也算作前台 → 那条断言偶发假失败（实战里踩到一次）。
+# 改成用"守卫自己的判据"筛：只挑它认为**确实不在前台**的窗口，测试就与当时谁在前台无关。
 if _notfg is not None:
     try:
         FocusGuard(_notfg).require()

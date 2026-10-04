@@ -80,4 +80,5 @@ git push -u origin master
 - [x] 没有 token / 密码 / 本机绝对路径之外的敏感信息；
 - [x] README 顶部有**免责声明**（EULA / 风控 / 账号风险）；
 - [ ] 决定仓库**可见性**（建议先私有，确认无误再转公开）；
-- [ ] （可选）打 tag 发布 exe 压缩包：`git tag v0.1 && git push origin v0.1`。
+- [ ] 发布 exe：打 tag 推上去，GitHub Actions 会自动在云端打包（含"打包后自检"门禁）并挂到同名 Release：
+      `git tag v0.2 && git push origin v0.2`（也可以在工作流页手动 Run workflow 并填版本号）。

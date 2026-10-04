@@ -42,7 +42,7 @@ from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSim
                    load_calibration, build_detectors, mean_abs_diff, scaled_frame,
                    wait_stable, wait_active)
 from vauto.calib import calibration_table
-from vauto.keystate import caps_lock_on, set_caps_lock
+from vauto.keystate import caps_lock_on, force_caps_off, set_caps_lock
 
 from .config import RunConfig
 from .nav import GridWalker
@@ -65,6 +65,7 @@ DETECTORS = (
     "panel_search_title",                                   # 进赛事：搜索面板已打开
     "tab_vehicle", "tab_creativity",                        # 用标签匹配来点标签（别写死坐标）
     "car_tile_22b",                                         # 「我的车辆」里 22B 那一格（换回 22B 用）
+    "tile_restart_event", "tile_exit_event",                 # 「赛事暂停菜单」（比赛里按 Esc / 切出去再回来）
     "fav_heart",                                            # 车格右下角的 ♥ = 已加入收藏（B 选车用）
     "panel_manufacturer", "brand_subaru",
     "brand_subaru_sel",                                     # 「斯巴鲁」被选中时的样子（黑底白字 ✗）
@@ -235,6 +236,13 @@ class Runner:
         self._black_last_nudge = 0.0                # 黑屏时上次「轻推鼠标唤醒」的时间
         self._black_last_note = 0.0                 # 黑屏时上次打印提示的时间（防刷屏）
         self._hsv_memo = None                       # (frame, 车格区HSV, 原点) —— 同一帧只算一次（提速）
+        # 【2026-10-04 用户要求】焦点进出挂钩：切出去关 CapsLock、切回来开回来 + 鼠标归位 +
+        # 重新认界面。装配在这里（而不是 build_stack 里）是因为回调要用 Runner 自己的状态机。
+        self._focus_lost_at = 0.0
+        g = getattr(self.s, "guard", None)
+        if g is not None and hasattr(g, "on_lose_focus"):
+            g.on_lose_focus = self._on_focus_lost
+            g.on_gain_focus = self._on_focus_gained
 
     # ---------------- 台账 ---------------- #
     def _load_ledger(self) -> dict:
@@ -405,6 +413,139 @@ class Runner:
         except Exception as exc:                    # 归位失败不影响主流程
             self.log.event("park_pointer_fail", err=str(exc)[:120])
 
+    # ---------------- 焦点进出（2026-10-04 用户要求）---------------- #
+    @staticmethod
+    def _cursor_pos():
+        """当前鼠标的屏幕坐标；取不到返回 None（只用于日志 + 归位前对比）。"""
+        try:
+            import win32api
+            x, y = win32api.GetCursorPos()
+            return int(x), int(y)
+        except Exception:
+            return None
+
+    def _on_focus_lost(self) -> None:
+        """焦点离开游戏窗口 → **关掉大写锁定**（用户要求：切出去做别的事时不要一直大写）。
+
+        为什么放在这里而不是"每隔一会儿查一次"：FocusGuard 每次动作前都会查前台，
+        所以这是一条"一定会被走到"的检查点，不需要额外线程。
+        """
+        self._focus_lost_at = time.monotonic()
+        if self.cfg.replay or self.cfg.dry_run:
+            return
+        if not bool(getattr(self.cfg, "caps_lock_follow_focus", True)):
+            return
+        try:
+            before = bool(caps_lock_on())
+            after = bool(set_caps_lock(False))
+            self.log.event("focus_lost", caps_before=before, caps_after=after,
+                           at=self._cursor_pos())
+            print("  [焦点] 切出游戏 → 大写锁定已关（切回来会自动开 + 鼠标归位）")
+        except Exception as exc:
+            self.log.event("focus_lost_caps_fail", err=str(exc)[:120])
+
+    def _on_focus_gained(self) -> None:
+        """焦点回到游戏窗口 → 开回大写锁定 + 鼠标归位 + 重新判"我在哪一屏"。
+
+        这三件正是用户说的"切回来就不识别了"的解药：
+        ① CapsLock 开回来 —— 游戏的按键绑定/输入行为与它有关；
+        ② 鼠标归位 —— 他切出去时鼠标可能停在游戏某个控件上，悬停会改控件外观、干扰画面判据；
+        ③ 重新认界面 —— 切出去期间游戏可能自己暂停/跳了界面，继续按原计划走就会"莫名其妙"。
+        ③ 只做**保守动作**：只有确实认出"有弹窗/菜单挡路"才清掉它（绝不在认不出时按回车）。
+        """
+        if self.cfg.replay or self.cfg.dry_run:
+            return
+        _away = (time.monotonic() - self._focus_lost_at) if self._focus_lost_at else 0.0
+        # ① 大写锁定开回来
+        _cap = None
+        if bool(getattr(self.cfg, "caps_lock_follow_focus", True)):
+            try:
+                _cap = bool(set_caps_lock(True))
+            except Exception:
+                _cap = None
+        # ② 鼠标归位（先记下它现在在哪，日志里能看出"是不是被留在控件上"了）
+        _pos = self._cursor_pos()
+        if bool(getattr(self.cfg, "park_on_focus_return", True)):
+            self._park_pointer("焦点回到游戏：鼠标归位")
+        # ③ 重新判"我在哪一屏"
+        _state = "skipped"
+        if bool(getattr(self.cfg, "focus_resync", True)):
+            try:
+                _state, _sc = self._where_am_i()
+            except Exception as exc:
+                _state = f"probe_error:{str(exc)[:60]}"
+        self.log.event("focus_gained", away_sec=round(_away, 1), caps_after=_cap,
+                       cursor_before=None if _pos is None else list(_pos), state=_state)
+        print(f"  [焦点] 回到游戏（离开 {_away:.1f}s）→ 大写锁定 {'开' if _cap else '关'}、"
+              f"鼠标已归位、当前界面「{_state}」")
+        if _state in ("skipped",) or not bool(getattr(self.cfg, "focus_resync", True)):
+            return
+        if not bool(getattr(self.cfg, "auto_recover", True)):
+            return
+        # 只在"确实认出了有东西挡路"时清一次（rounds=1）；认不出/主世界/各页面一律不动手，
+        # 交给状态机自己按原逻辑走（它本来就会按 Esc 回主菜单）。
+        if _state not in self.KNOWN_STATES:
+            self.recover_to_known("焦点回来后发现界面挡路", rounds=1)
+
+    def _resume_if_event_menu(self, frame=None, hold_key_after: bool = False) -> bool:
+        """比赛进行中检测到「重新开始赛事 / 退出赛事」菜单 → 按返回键回到比赛。
+
+        【2026-10-04 用户实测场景】他在**比赛里**把焦点切出去做别的事 → 游戏自己弹出这个
+        菜单（挑战计时也跟着停）→ 切回来之后，程序原来会一直等结算判据（最多等满看门狗
+        3×180 秒才中止）——表现就是"切回来就不动了"。现在：认出来 → 按 `event_menu_resume_key`
+        （实测底部提示条是 "Esc 返回"）→ 回到比赛继续跑。
+        返回 True = 确实认出并处理了（调用方应把这一帧当成"比赛被暂停过"）。
+
+        【2026-10-04 用户口径】"Esc 是回到比赛之后继续按 W 直到比赛结束，和位置没关系，
+        直接用键盘的 Esc 就可以" —— 所以：
+          * 发的就是一次**真实 Esc 按键**（和物理键盘同一条通路），跟菜单里高亮在哪一格无关；
+          * `hold_key_after=True` 时：返回比赛后**重新按一次 W**（先松开再按住）。原因是
+            菜单弹出期间按着的那次 W，游戏在恢复后不一定当成"仍按着"；重新来一次
+            keydown 才能保证"回来就继续开"。比赛阶段调用方传 True。
+        """
+        if not bool(getattr(self.cfg, "event_menu_auto_resume", True)):
+            return False
+        frame = self.frame() if frame is None else frame
+        for nm in ("tile_restart_event", "tile_exit_event"):
+            d = self.s.dets.get(nm)
+            if d is None:
+                continue
+            try:
+                hit = d.observe(frame)      # 走滞回去抖（连续 confirm_frames 帧才算命中）
+            except Exception:
+                hit = None
+            if hit is None:
+                continue
+            self.log.event("event_menu_detected", det=nm, score=round(hit.score, 3))
+            _key = str(getattr(self.cfg, "event_menu_resume_key", "esc") or "esc")
+            print(f"  [焦点] 认到「比赛菜单」（{nm} {hit.score:.3f}）→ 按 {_key} 返回比赛")
+            self.release_all("从「比赛菜单」返回前先松开所有键")
+            self.press(_key, "从「比赛菜单」返回比赛（继续跑）")
+            self.sleep(0.6)
+            if hold_key_after:
+                self.hold(self.cfg.hold_key, "回到比赛 → 重新按住（一直按到比赛结束）")
+            return True
+        return False
+
+    def _caps_restore_on_exit(self) -> None:
+        """收尾：把大写锁定关掉（用户要求 2026-10-04："关闭程序的时候也关掉 caps"）。
+
+        覆盖 F1 急停 / Ctrl+C / 点「停止」/ 正常跑完；"直接关控制台窗口"那条路走不到
+        finally（控制台是 `os._exit`），由 `flow/console.py::_on_close` 单独兜。
+        """
+        if self.cfg.replay or self.cfg.dry_run:
+            return
+        if not bool(getattr(self.cfg, "caps_off_on_exit", True)):
+            return
+        try:
+            _before = bool(caps_lock_on())
+            _after = bool(force_caps_off())
+            self.log.event("caps_lock_exit", before=_before, after=_after)
+            if _before:
+                print("  [收尾] 大写锁定已关（用户要求：退出后不留大写）")
+        except Exception as exc:
+            self.log.event("caps_lock_exit_fail", err=str(exc)[:120])
+
     def click_match(self, name: str, frame: Optional[np.ndarray] = None,
                     note: str = "") -> bool:
         """匹配某个元素并点它的中心（最稳的点击方式：坐标不写死）。"""
@@ -499,6 +640,9 @@ class Runner:
 
     def farm_one_round(self, retry: bool = True) -> str:
         """一轮：等加载稳定 → 按住 W → 等结算 → 松手 → （Esc 重试 | Enter 继续）。"""
+        # 0) 【2026-10-04】先看一眼是不是停在「比赛菜单」（用户在比赛里切出去过）→ 先回比赛
+        if not self.cfg.replay:
+            self._resume_if_event_menu()
         # 1) 等加载（画面连续稳定；不做固定 sleep）
         if not self.cfg.replay:
             wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
@@ -523,6 +667,7 @@ class Runner:
         # 3) 轮询结算判据（两个判据每帧都要喂，否则其中一个的连续帧计数会断）
         polls, settle_hit = 0, None
         last_frame, last_change, idle_warns = None, time.monotonic(), 0
+        _menu_resumes = 0          # 这一轮里"从比赛菜单返回比赛"按了几次（防刷键）
         while polls < self.cfg.max_polls_per_round:
             polls += 1
             try:
@@ -530,6 +675,15 @@ class Runner:
             except AbortedByUser:
                 self.release_all("急停")
                 return "aborted"
+            # 【2026-10-04 用户实测场景】比赛里切出去做别的事 → 游戏弹「重新开始赛事/退出赛事」
+            # 菜单、挑战计时也停 → 原来这里会一直等结算判据，最长等满看门狗才中止。
+            # 现在认出来就按"返回"回比赛（最多 3 次，免得按不动时刷键），并把这一帧
+            # 当成"比赛被暂停过"：不计入轮询，也重置卡死计时（画面变化是菜单造成的）。
+            if _menu_resumes < 3 and self._resume_if_event_menu(frame, hold_key_after=True):
+                _menu_resumes += 1
+                polls -= 1
+                last_change = time.monotonic()
+                continue
             ha = self.observe("hint_esc_retry", frame)
             hb = self.observe("panel_result", frame)
             if ha or hb:
@@ -1641,14 +1795,30 @@ class Runner:
         self._adv_before = None      # 上一屏按 right 之前的列表区域
         self._adv_diff = None        # 上一次 right 到底滚没滚（用下一帧算出来的）
         first_sig = None             # 本轮第一屏的签名（"绕回开头"只跟它比）
+        _resynced_once = False      # "认不出车格"时只自愈一次，防止在两个坏状态之间打转
         for attempt in range(1, self.cfg.nav_budget + 1):
             self.s.stop.check()
             frame = self.frame()
             tiles = self._grid_tiles(frame)
             if not tiles:
                 shot = self._save_evidence(frame, "grid_no_tiles")
+                self.log.event("grid_no_tiles", shot=shot, resynced=_resynced_once)
+                # 【2026-10-04 用户实测："切出去再回来就不识别了"】最常见的原因就是这时候
+                # 游戏自己暂停了（或停在别的界面），而"我的车辆"列表根本不在眼前。
+                # 原来直接 `return False` 结束 B —— 表现就是"回来之后不干了"。
+                # 现在先自愈回已知界面、再重新进一次列表；只试一次。
+                if (not _resynced_once and not self.cfg.replay
+                        and bool(getattr(self.cfg, "auto_recover", True))):
+                    _resynced_once = True
+                    print("  [!] 认不出车格 → 先自愈回已知界面，再重新进一次列表")
+                    _st = self.recover_to_known("列表里认不出车格")
+                    if (_st in self.KNOWN_STATES and self._ensure_vehicle_tab()
+                            and self.click_match("tile_change_car", note="重新进列表")
+                            and self._wait_for("page_title_garage",
+                                               self.cfg.page_timeout) is not None):
+                        self.sleep(0.6)
+                        continue
                 print(f"  [!] 认不出车格（证据 {shot}）→ 结束 B")
-                self.log.event("grid_no_tiles", shot=shot)
                 return False
             # 【2026-10-04 提速】结算"上一屏按的 right 到底滚没滚" —— 用**这一帧**（已经抓到）
             # 算，不再额外抓一帧。diff 存进 self._adv_diff，供下面的"翻到头了吗"用。
@@ -2459,6 +2629,7 @@ class Runner:
     # 别人的弹窗、卡在某个加载），它就会**继续按计划里的键** → 越走越远，日志里只剩
     # 一串看不懂的按键。有了标签，程序至少能自己回答"我在哪一屏、该往哪退"。
     STATE_LABELS = (
+        ("event_menu", ("tile_restart_event", "tile_exit_event")),  # 赛事暂停菜单（比赛里按 Esc／切出去再回来）
         ("story_menu", ("tile_collection",)),                 # 主菜单·剧情页（收集簿磁贴）
         ("veh_menu", ("tile_mastery",)),                      # 主菜单·车辆页
         ("garage_list", ("page_title_garage",)),              # 我的车辆 列表
@@ -2532,6 +2703,12 @@ class Runner:
                 self.press("down", "自愈：「移动至住所」→ 选「取消」")
                 self.sleep(0.4)
                 self.press(self.cfg.confirm_key, "自愈：确认「取消」")
+            elif state == "event_menu":
+                # 【2026-10-04 用户指路】比赛里按 Esc（或切出去再回来）会停在
+                # 「重新开始赛事 / 退出赛事」这个菜单；底部提示条写的是 "Esc 返回" ——
+                # 按它就能**回到比赛继续开**（不是回车：回车会选中高亮的那一项）。
+                self.press(str(getattr(self.cfg, "event_menu_resume_key", "esc") or "esc"),
+                           "自愈：从「比赛菜单」返回比赛")
             elif state == "dialog_nopts":
                 self.press(self.cfg.confirm_key, "自愈：关掉「不够支付全部」")
             elif state == "dialog_rate":
@@ -2878,6 +3055,7 @@ class Runner:
             self.log.event("crash", type=type(exc).__name__, msg=str(exc)[:300], shot=shot)
         finally:
             self.release_all("收尾")
+            self._caps_restore_on_exit()      # 退出后不留大写锁定（用户要求）
             self._save_ledger()
         print("-" * 78)
         print(f"本次结果: {self.stats}")

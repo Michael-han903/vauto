@@ -171,10 +171,23 @@ class FrameCache:
 
 
 def all_frames() -> dict[str, list[Path]]:
-    """{场景名: [帧路径...]}，按文件名排序。"""
+    """{场景名: [帧路径...]}，按文件名排序。
+
+    【2026-10-04】支持 .jpg：为了省磁盘（1.1GB → 约 200MB），大场景里除前 3 张以外的
+    无损 PNG 由 cleanup.py 转成了质量 95 的 JPEG，画面与样本数都没少 —— 这里两种都要读，
+    否则那一部分会被静默当成"不存在"，标定的正/负样本会突然变少。
+    """
     if not GOLDEN.is_dir():
         return {}
-    return {d.name: sorted(d.glob("*.png")) for d in sorted(GOLDEN.iterdir()) if d.is_dir()}
+    out: dict[str, list[Path]] = {}
+    for d in sorted(GOLDEN.iterdir()):
+        if not d.is_dir():
+            continue
+        frames = sorted([p for p in d.iterdir()
+                         if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")])
+        if frames:
+            out[d.name] = frames
+    return out
 
 
 def positive_frames(name: str, index: dict[str, list[Path]]) -> list[Path]:

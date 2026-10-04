@@ -74,6 +74,7 @@ class Launcher:
         self.stack = None
         self.worker: Optional[threading.Thread] = None
         self.done_flag = False
+        self._live_started = False        # 这次会话是否真的按过键（关窗口时据此收掉大写锁定）
         self.base_cfg = None              # 载入的配置（没有就是 RunConfig 默认）
         self.overrides: dict = {}         # 「高级设置」里的覆盖项
 
@@ -291,6 +292,11 @@ class Launcher:
         self.done_flag = False
         self.runner = None
         self.stack = None
+        # 【2026-10-04】记住"这次真的按过键"，以便关窗口时把大写锁定收掉（dry-run 不动键盘）
+        try:
+            self._live_started = bool(self.var_live.get())
+        except Exception:
+            self._live_started = False
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self._say("=" * 70 + "\n")
@@ -315,6 +321,19 @@ class Launcher:
             if not messagebox.askyesno("还在运行", "任务还在跑，确定要关窗口吗？\n（等同于点「停止」）"):
                 return
             self._stop()
+        # 【2026-10-04 用户要求："关闭程序的时候也关掉 caps"】
+        # 这里紧接着就是 os._exit —— 工作线程是 daemon，Runner 的 finally 跑不到，
+        # 所以必须在这条路径上自己把大写锁定收掉（只在真的按过键的那次会话里做）。
+        try:
+            if getattr(self, "_live_started", False):
+                from vauto.keystate import force_caps_off
+                _left = force_caps_off()
+                if not _left:
+                    self._say("\n[收尾] 大写锁定已关（用户要求）\n")
+                else:
+                    self._say("\n[收尾] 想让大写锁定关掉，但系统没接受（请手动按一下 CapsLock）\n")
+        except Exception:
+            pass
         # 先把两个流刷干净再 _exit（否则管道/重定向下最后一段输出会丢）
         try:
             sys.stdout.flush()

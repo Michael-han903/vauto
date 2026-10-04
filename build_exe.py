@@ -178,22 +178,24 @@ def main() -> int:
     replay_src = ROOT / "logs" / "replay"
     if replay_src.is_dir():
         shutil.copytree(replay_src, dist / "logs" / "replay", dirs_exist_ok=True)
-    # 金标帧：仓库里有 1.1GB，全部打进去太夸张；offline_replay 只取每个类别的**前几张**
-    # （sorted(...)[:in_round] / [:settle]）→ 只拷前 6 张。两个位置都放：
-    #   _internal/golden_frames   ← offline_replay 里 GOLDEN=Path(__file__).parent/… 走这里
-    #   golden_frames             ← 兜底（万一哪天改成 cwd 相对）
+    # 金标帧：仓库里的完整素材 golden_frames/（1.1GB，gitignore，只在开发机上）优先；
+    # 没有就退回**已入库的最小集** golden_frames_min/（6 张 JPEG，CI/别人 clone 也有）
+    # —— 这样发布包里的 exe 也能跑 `--selftest`（以前 CI 打出来的包不能，因为素材不在仓库里）。
+    # `--selftest` 走的 offline_replay 只需要 challenge_hud / challenge_result 两类、各取前 3 张。
     gf = ROOT / "golden_frames"
+    if not (gf / "challenge_hud").is_dir():
+        gf = ROOT / "golden_frames_min"
     if gf.is_dir():
-        for sub in ("challenge_hud", "challenge_result", "car_mastery_page"):
+        for sub in ("challenge_hud", "challenge_result"):
             sd = gf / sub
             if not sd.is_dir():
                 continue
-            picks = sorted(sd.glob("*.png"))[:6]
-            for dst_root in (dist / "_internal" / "golden_frames", dist / "golden_frames"):
-                dst = dst_root / sub
-                dst.mkdir(parents=True, exist_ok=True)
-                for f in picks:
-                    shutil.copy2(f, dst / f.name)
+            picks = [p for p in sorted(sd.glob("*.png"))[:3]]
+            picks += [p for p in sorted(sd.glob("*.jpg"))[:3 - len(picks)]]
+            dst = dist / "_internal" / "golden_frames" / sub
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in picks:
+                shutil.copy2(f, dst / f.name)
     docs = dist / "docs"
     docs.mkdir(exist_ok=True)
     for f in ("运行手册.md", "业务实测要点.md", "标定报告.md"):

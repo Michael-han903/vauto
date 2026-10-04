@@ -129,6 +129,19 @@ class RunConfig:
     # 现在只给这么点固定缓冲，剩下交给 _ensure_vehicle_tab 轮询（它按 Esc + 反复判页）。
     after_enter_car_wait: float = 6.0
     ensure_caps_lock: bool = True       # 开跑前检查大写锁定，关着就打开（用户要求）
+    # ---- 焦点进出（2026-10-04 用户要求）----
+    # "我有的时候会把屏幕焦点切出去做一些别的……当我切出去的时候自动解除大写锁定，
+    #  切回来的时候再自动开启，并且检测鼠标位置，把鼠标归位，关闭程序的时候也关掉 caps"
+    caps_lock_follow_focus: bool = True   # 切出游戏窗口 → 自动关 CapsLock；切回来 → 自动开回
+    event_menu_resume_key: str = "esc"    # 「重新开始赛事 / 退出赛事」这个**比赛菜单**里，按哪个键
+                                          # 回到比赛。实测底部提示条写的是 "Esc 返回"；
+                                          # 千万别按回车 —— 那会选中高亮的那一项（可能是退出赛事）
+    event_menu_auto_resume: bool = True   # 比赛进行中一旦认到这个菜单 → 自动按上面那个键回比赛
+                                          # （用户在比赛里切出去再回来就会看到它，挑战计时也会停）
+    caps_off_on_exit: bool = True         # 退出程序（F1/停止/关窗口）→ 把 CapsLock 关掉
+    park_on_focus_return: bool = True     # 切回来先检测/归位鼠标（悬停会改控件外观、干扰判据）
+    focus_resync: bool = True             # 切回来重新判一次"我在哪一屏"，只清掉确实挡路的
+                                          # 弹窗/菜单（绝不乱按回车）
     # ---- 挂机防睡（2026-10-04 用户口径：屏幕允许变黑，程序必须继续跑）----
     keep_awake: bool = True             # 运行期间防「系统睡眠」（双 API 保险）。
                                         # 注意：默认**不拦截熄屏** —— 15 分钟没操作照常黑屏

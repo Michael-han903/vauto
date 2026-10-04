@@ -4,6 +4,42 @@
   "scale": 1.0,
   "generated_at": "2026-10-02T20:0:00",
   "templates": {
+    "tile_restart_event": {
+      "file": "templates/tile_restart_event.png",
+      "desc": "**比赛进行中**按 Esc（或切出去再切回来）出现的「重新开始赛事」磁贴 —— 它是「赛事暂停菜单」的锚点，与主菜单剧情页的「收集簿」磁贴完全不同。用户 2026-10-04 亲口指路：\"在比赛界面切出去再回来之后，看到的大概是…重点锚点可能是 重新开始赛事 与 退出赛事\"。",
+      "threshold": 0.55,
+      "release_threshold": 0.49,
+      "roi": [
+        440,
+        1060,
+        640,
+        390
+      ],
+      "confirm_frames": 2,
+      "pos_measured": 1.0,
+      "neg_max_measured": 0.346,
+      "neg_frames": 134,
+      "manual": true,
+      "note": "标定：正样本 = 用户截图 upload_20261004_222623_5.png（3840x2160 原生）自匹配 1.000；负样本 = 134 帧真实素材（含用户那张\"正常剧情页\"图一、golden_frames 全部场景、logs/ 历史证据图）最高 0.346 → 阈值 0.55 两侧余量 0.45 / 0.20。"
+    },
+    "tile_exit_event": {
+      "file": "templates/tile_exit_event.png",
+      "desc": "「赛事暂停菜单」里的「退出赛事」磁贴（与「重新开始赛事」同一个菜单，两个锚点互为佐证）。",
+      "threshold": 0.55,
+      "release_threshold": 0.49,
+      "roi": [
+        2740,
+        1060,
+        660,
+        310
+      ],
+      "confirm_frames": 2,
+      "pos_measured": 1.0,
+      "neg_max_measured": 0.335,
+      "neg_frames": 134,
+      "manual": true,
+      "note": "同 tile_restart_event 的标定口径（同一批 134 帧负样本）。"
+    },
     "tile_collection": {
       "file": "templates/tile_collection.png",
       "desc": "主菜单「剧情」页左下磁贴上的「收集簿」白字 —— 用来判断「我在不在主菜单」（与当前车辆无关；换车后仍然有效，这正是它存在的理由）",

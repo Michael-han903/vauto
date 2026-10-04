@@ -42,16 +42,35 @@ from flow.runner import Runner, build_offline_stack
 from vauto import load_image
 
 GOLDEN = HERE / "golden_frames"
+# 备用素材：仓库里**已入库的最小集**（6 张 JPEG）。发布包/CI/别人 clone 上没有 gitignore 的
+# golden_frames/，但 build_exe.py 会把 min 集打进 exe 的 _internal/ → 这里按同一个相对位置找。
+GOLDEN_MIN = HERE / "golden_frames_min"
+
+
+def _scene_frames(scene: str) -> "list":
+    """某个场景的帧，**.png/.jpg 都算**。
+
+    【2026-10-04】别只 glob("*.png")：① 完整素材里大场景的帧已被 cleanup.py 转成 JPEG；
+    ② 备用的 golden_frames_min/ 本来就是 JPEG。经验教训同 selftest_*：只认一种扩展名 →
+    素材"看起来不存在" → 报「缺少素材」而不是报真因（这个坑在发布打包时才暴露）。
+    """
+    for root in (GOLDEN, GOLDEN_MIN):
+        d = root / scene
+        if not d.is_dir():
+            continue
+        fs = sorted(p for p in d.iterdir()
+                    if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg"))
+        if fs:
+            return fs
+    return []
 
 
 class TapeCapture:
     """按剧本逐帧供片：每轮先给 in_round 帧，再给 settle 帧。"""
 
     def __init__(self, rounds: int, in_round: int = 3, settle: int = 3) -> None:
-        self.hud = [load_image(p, flags=3) for p in
-                    sorted((GOLDEN / "challenge_hud").glob("*.png"))[:in_round]]
-        self.res = [load_image(p, flags=3) for p in
-                    sorted((GOLDEN / "challenge_result").glob("*.png"))[:settle]]
+        self.hud = [load_image(p, flags=3) for p in _scene_frames("challenge_hud")[:in_round]]
+        self.res = [load_image(p, flags=3) for p in _scene_frames("challenge_result")[:settle]]
         if not self.hud or not self.res:
             raise RuntimeError("缺少 challenge_hud / challenge_result 素材，无法回放")
         script: List[np.ndarray] = []

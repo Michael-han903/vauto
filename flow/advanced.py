@@ -19,6 +19,9 @@ from typing import Any, Callable, Dict
 EXCLUDE = {
     "title_key", "phase", "rounds", "cars", "cycles", "enter_event",
     "dry_run", "share_code", "round_minutes", "hotkey",
+    # 【2026-10-04】replay 是引擎内部开关（回放/自检用）：误在实跑时打开会让程序
+    # "只回放不动手"，看起来像"点了启动却没反应"。不给它出现在面板里。
+    "replay",
 }
 
 # 中文标签（没有的字段直接显示英文名，不影响使用）
@@ -43,6 +46,12 @@ CN = {
     "fav_key": "加收藏菜单下移键", "park_pointer": "鼠标用完归位左上角",
     "park_at": "归位坐标", "after_enter_car_wait": "上车后固定缓冲(秒)",
     "ensure_caps_lock": "开跑前自动开大写锁定", "grid_area": "车格区域(l,t,r,b)",
+    "caps_lock_follow_focus": "切出游戏关大写/切回自动开",
+    "event_menu_resume_key": "比赛菜单里回比赛的键(默认Esc)",
+    "event_menu_auto_resume": "比赛里认到菜单就自动回比赛",
+    "caps_off_on_exit": "退出程序时关掉大写锁定",
+    "park_on_focus_return": "切回来先把鼠标归位",
+    "focus_resync": "切回来重新判一次当前界面",
     "tile_w_min": "车格宽度下限", "tile_w_max": "车格宽度上限",
     "tile_h_min": "车格高度下限", "tile_h_max": "车格高度上限",
     "heart_off": "♥ 搜索区左上角", "heart_roi": "♥ 搜索区大小",
@@ -64,6 +73,12 @@ CN = {
     "max_runtime_min": "总时长上限(分钟,0=不限)", "require_car_22b": "A 前校验当前车=22B",
     "use_manufacturer_panel": "找22B用制造商面板",
     "cycles": "主循环次数(0=一直循环)", "farm_first": "开局先刷后花",
+    "unfav_cap": "取消收藏阶段台数上限",
+    "keep_awake": "运行期间防系统睡眠",
+    "keep_display_on": "运行期间屏幕也常亮(默认否)",
+    "power_plan_guard": "顺便托管电源计划(退出还原)",
+    "black_wake_nudge": "黑屏时轻推鼠标唤醒屏幕",
+    "black_wait_max": "全黑最多等多少秒(0=无限等)",
 }
 
 

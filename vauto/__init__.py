@@ -41,7 +41,7 @@ from __future__ import annotations
 import importlib
 from typing import Dict, List
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # 名字 -> 定义它的子模块（惰性导入用，见下方 __getattr__）
 _EXPORTS: Dict[str, str] = {
