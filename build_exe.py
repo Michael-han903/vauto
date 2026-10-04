@@ -87,7 +87,68 @@ def _wipe_dist() -> None:
             raise
 
 
+def _stash_user_data() -> Path | None:
+    """重打包前把**用户数据**挪到旁边暂存，打完放回。
+
+    dist/vauto 是"解压即用"的完整目录，用户会在里面攒东西：
+      * logs/                  —— 运行日志、证据图、ledger 账本（累计时长/解锁台数）
+      * vauto_config.json      —— 控制台「高级设置」里存过的配置
+    PyInstaller 会整目录重建 → 不保住这些的话，一次"换新 exe"就把记录清光了。
+    """
+    dist = ROOT / "dist" / "vauto"
+    keep = ROOT / "dist" / "_vauto_keep"
+    if not dist.exists():
+        return None
+    moved = False
+    for name in ("logs", "vauto_config.json"):
+        src = dist / name
+        if not src.exists():
+            continue
+        dst = keep / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True) if dst.is_dir() else dst.unlink()
+            shutil.move(str(src), str(dst))
+            moved = True
+            print(f"  [保留] 先暂存用户数据：{name}")
+        except Exception as exc:
+            print(f"  [!] 用户数据 {name} 暂存失败（继续打包）：{exc}")
+    return keep if moved else None
+
+
+def _restore_user_data(keep: Path | None) -> None:
+    if not keep or not keep.exists():
+        return
+    dist = ROOT / "dist" / "vauto"
+    for name in ("logs", "vauto_config.json"):
+        src = keep / name
+        if not src.exists():
+            continue
+        dst = dist / name
+        try:
+            if src.is_dir():
+                if dst.exists():
+                    shutil.copytree(src, dst, dirs_exist_ok=True)   # 与新建的 logs 合并
+                    shutil.rmtree(src, ignore_errors=True)
+                else:
+                    shutil.move(str(src), str(dst))
+            else:
+                shutil.copy2(src, dst)
+                src.unlink()
+            print(f"  [保留] 已放回用户数据：{name}")
+        except Exception as exc:
+            print(f"  [!] {name} 放回失败：{exc}")
+    try:
+        keep.rmdir()
+    except Exception:
+        pass
+
+
 def main() -> int:
+    # 【2026-10-04 用户关切】重打包 = 整个 dist/vauto 重建 → 先把用户数据（logs/、配置）
+    # 挪走暂存、打完放回，免得"换个新 exe"把累计时长/日志/设置一起清掉。
+    keep = _stash_user_data()
     _wipe_dist()
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
            "--onedir", "--console", "--name", "vauto",
@@ -140,6 +201,7 @@ def main() -> int:
         if src.exists():
             shutil.copy2(src, docs / f)
     (dist / "启动说明.txt").write_text(README, encoding="utf-8")
+    _restore_user_data(keep)
 
     print("\n✓ 打包完成：", dist / "vauto.exe")
     print("  整个", dist, "文件夹拷到可写位置，双击 vauto.exe 即可。")
