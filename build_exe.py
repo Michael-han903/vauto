@@ -145,14 +145,60 @@ def _restore_user_data(keep: Path | None) -> None:
         pass
 
 
+def _running_vauto() -> list:
+    """正在运行的 vauto 进程列表（用于"跑着就别打包"的前置检查）。
+
+    注意：`tasklist` 的输出**不是 UTF-8**（中文 Windows 是 GBK/936）—— 用 text=True 解码会抛
+    UnicodeDecodeError（实测踩过）。这里直接拿字节、按 ASCII 过滤，只认 "vauto.exe" 这个名字。
+    """
+    try:
+        p = subprocess.run(["tasklist", "/FI", "IMAGENAME eq vauto.exe", "/FO", "CSV"],
+                           capture_output=True, timeout=20)
+        out = (p.stdout or b"").decode("ascii", "ignore")
+    except Exception:
+        return []
+    return [l.strip() for l in out.splitlines() if "vauto.exe" in l.lower()]
+
+
 def main() -> int:
+    # 【2026-10-05 修·实测踩的坑】vauto 正在跑时 dist/vauto 被占用：
+    #   * PyInstaller 改名旧目录失败 → 中途退出；
+    #   * **更糟**：用户数据已经"暂存走"、却没走到最后那步"放回" → 正在跑的进程写入路径没了
+    #     （实测 logs 被落在 dist/_vauto_keep 里，用户当时就在跑）。
+    # 所以：先查进程 —— 跑着就**什么也不动**直接退出。要打到别处用 --out。
+    _argv = sys.argv[1:]
+    _out = None
+    if "--out" in _argv:
+        _i = _argv.index("--out")
+        _out = _argv[_i + 1] if _i + 1 < len(_argv) else None
+    _run = _running_vauto()
+    if _run and _out is None:
+        print("[X] 检测到 vauto.exe 正在运行 → 拒绝打包（会打断正在跑的流程，目录也被占用）")
+        for l in _run:
+            print("    ", l)
+        print("    处理办法：① 先关掉 vauto 再跑本脚本；")
+        print("              ② 不想关：py -3.14 build_exe.py --out dist/vauto_next（打到另一个目录）")
+        return 2
+
     # 【2026-10-04 用户关切】重打包 = 整个 dist/vauto 重建 → 先把用户数据（logs/、配置）
     # 挪走暂存、打完放回，免得"换个新 exe"把累计时长/日志/设置一起清掉。
-    keep = _stash_user_data()
-    _wipe_dist()
+    # 【2026-10-05】--out 模式不碰线上目录，所以不暂存、不清空。
+    keep = None if _out else _stash_user_data()
+    if _out is None:
+        _wipe_dist()
+    # 【2026-10-05】--out 的正确姿势：PyInstaller 的 --name 同时决定 **exe 名字**和
+    # **输出文件夹名**，所以直接 --distpath dist/vauto_next 会打出 vauto_next.exe ✗。
+    # 先打到 <out>_stage/vauto（结构跟线上完全一致），再把整个文件夹改成 <out>。
+    _out_path = Path(_out).resolve() if _out else None
+    _stage = (_out_path.parent / (_out_path.name + "_stage")) if _out_path else None
+    if _stage is not None and _stage.exists():
+        shutil.rmtree(_stage, ignore_errors=True)
+    name = "vauto"
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
-           "--onedir", "--console", "--name", "vauto",
-           "--add-data", "templates;templates"]
+           "--onedir", "--console", "--name", name]
+    if _stage is not None:
+        cmd += ["--distpath", str(_stage)]
+    cmd += ["--add-data", "templates;templates"]
     # 回放数据（logs/replay）在仓库里是被 gitignore 的 → 别人 clone / CI 上不一定有，
     # 没有就**别加这个参数**（PyInstaller 遇到不存在的 add-data 路径会直接报错）。
     if (ROOT / "logs" / "replay").is_dir():
@@ -163,12 +209,26 @@ def main() -> int:
             "--collect-submodules", "vauto",
             "--collect-submodules", "flow",
             str(ROOT / "vauto_gui.py")]
-    run(cmd)
+    # 【2026-10-05】打包过程崩了也要把用户数据**放回去**（实测：中断后 logs 被落在暂存区，
+    # 正跑着的进程写入路径直接没了 → 比"没打成包"严重得多）
+    try:
+        run(cmd)
+    except BaseException:
+        if keep is not None:
+            _restore_user_data(keep)
+        raise
 
-    dist = ROOT / "dist" / "vauto"
+    dist = (_stage / "vauto") if _stage is not None else (ROOT / "dist" / "vauto")
     if not (dist / "vauto.exe").exists():
-        print("[!] 没找到 dist/vauto/vauto.exe —— 打包失败，看上面日志")
+        print(f"[!] 没找到 {dist / 'vauto.exe'} —— 打包失败，看上面日志")
         return 1
+    if _stage is not None:
+        # 从暂存目录搬到 --out 指定位置（目录结构完全一致，拷走即用）
+        if _out_path.exists():
+            shutil.rmtree(_out_path, ignore_errors=True)
+        shutil.move(str(dist), str(_out_path))
+        shutil.rmtree(_stage, ignore_errors=True)
+        dist = _out_path
 
     # 模板放一份到 exe 旁边（方便手工改 manual_thresholds.json 做临时试验）
     shutil.copytree(ROOT / "templates", dist / "templates", dirs_exist_ok=True)
@@ -203,7 +263,8 @@ def main() -> int:
         if src.exists():
             shutil.copy2(src, docs / f)
     (dist / "启动说明.txt").write_text(README, encoding="utf-8")
-    _restore_user_data(keep)
+    if keep is not None:
+        _restore_user_data(keep)
 
     print("\n✓ 打包完成：", dist / "vauto.exe")
     print("  整个", dist, "文件夹拷到可写位置，双击 vauto.exe 即可。")
