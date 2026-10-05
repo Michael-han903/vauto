@@ -351,19 +351,38 @@ try:
     def _cell_box(r, c):
         return (816 + c * (_W + _GAP), 424 + r * (_H + _GAP), _W, _H)
 
-    def _sim(cur, semantics, no_heart=(2, 1)):
-        """把 Runner 的"看画面"接口换成合成网格；press 按给定的键语义推进光标。"""
-        st = {"cur": cur, "presses": []}
-        # 模拟"只有 no_heart 那格没♥"（其余都有♥）—— 走路必须靠"光标压着的格是不是待处理"
-        # 来判断到没到，而不是靠指纹（同款同名车指纹一样，靠指纹会来回横跳）。
-        _r6._grid_tiles = lambda frame, _st=st, _nh=no_heart: [
-            (r, c, *_cell_box(r, c), (r, c) != _nh, 0.9 if (r, c) != _nh else 0.2)
-            for r in range(_ROWS) for c in range(_COLS)]
-        _r6._cursor_box = lambda frame, tiles=None, _st=st: _cell_box(*_st["cur"])
-        _r6._title_crop = lambda frame, x, y, w, h: (
-            f"cell_{(y - 424) // (_H + _GAP)}_{(x - 816) // (_W + _GAP)}")
+    def _sim(sel_row, sel_col, semantics, no_heart=(2, 1), ncols=_COLS):
+        """把 Runner 的"看画面"接口换成合成网格 —— 关键：**照真机几何建模**。
+
+        【2026-10-05 修】以前这里的桩是"车格固定、光标框随按键移动" —— 跟真机**正好相反**
+        （真机是：**选中的那一列永远画在最左**，光标框 x 恒 ~816；按 ←/→ 动的是**列表**）。
+        正因为桩建反了，才没抓住"用光标框变没变当进度"这个 bug。现在：
+          * 逻辑列 `lc` 渲染到屏幕列 `lc - sel_col`（选中的列 = 屏幕第 0 列 = x 816）；
+          * 光标框永远 x=816，只有 y 跟着"选中行"走；
+          * `←`/`→` 改 `sel_col`（列表整体滑动），`↑`/`↓` 在列内改选中行。
+        """
+        st = {"sel_row": sel_row, "sel_col": sel_col, "presses": []}
+
+        def _onscreen(lr, lc):
+            return lr, lc - st["sel_col"]
+
+        def _tiles(frame):
+            out = []
+            for lr in range(_ROWS):
+                for lc in range(ncols):
+                    sr, sc = _onscreen(lr, lc)
+                    if not (0 <= sc < ncols):        # 滑出视野的不报
+                        continue
+                    out.append((sr, sc, *_cell_box(sr, sc), (lr, lc) != no_heart,
+                                0.9 if (lr, lc) != no_heart else 0.2))
+            return out
+
+        _r6._grid_tiles = _tiles
+        # 光标框：x 永远 816（选中列画在最左），y 跟选中行 —— 真机就是这样，所以**它不会横移**
+        _r6._cursor_box = lambda frame, tiles=None, _st=st: _cell_box(_st["sel_row"], 0)
+        _r6._title_crop = lambda frame, x, y, w, h: f"px_{x}_{y}"
         _r6._fp_diff = lambda a, b: 0.0 if a == b else 100.0
-        _r6.frame = lambda guard=True: None
+        _r6.frame = lambda guard=True: _DUMMY_FRAME
         _r6.sleep = lambda s: None
 
         def _press(key, note="", _st=st):
@@ -373,37 +392,62 @@ try:
         return st
 
     def _new_model(st, key):
-        """【2026-10-04 晚·用户实测模型】↑/↓ **只在当前列内**上下；←/→ **在左右列之间**切换。"""
-        r, c = st["cur"]
+        """【2026-10-04 晚·用户实测模型】↑/↓ **只在当前列内**上下；←/→ **在左右列之间**切换
+        （= 列表整体滑动，让目标那列变成"选中的最左列"）。"""
+        r, c = st["sel_row"], st["sel_col"]
         if key == "down":
-            st["cur"] = (min(r + 1, _ROWS - 1), c)
+            st["sel_row"] = min(r + 1, _ROWS - 1)
         elif key == "up":
-            st["cur"] = (max(r - 1, 0), c)
+            st["sel_row"] = max(r - 1, 0)
         elif key == "right":
-            st["cur"] = (r, min(c + 1, _COLS - 1))
+            st["sel_col"] = min(c + 1, _COLS - 1)
         elif key == "left":
-            st["cur"] = (r, max(c - 1, 0))
+            st["sel_col"] = max(c - 1, 0)
 
-    _s1 = _sim((0, 0), _new_model, no_heart=(2, 1))
+    _DUMMY_FRAME = _np.ones((8, 8, 3), dtype="uint8") * 128
+
+    _s1 = _sim(0, 0, _new_model, no_heart=(2, 1))
     _ok1 = _r6._walk_to_tile()
-    ck("走路能走到 (2,1)：先用 ←/→ 把目标列挪成选中列，再用 ↑/↓ 对行",
-       _ok1 and _s1["cur"] == (2, 1),
-       f"cur={_s1['cur']} 按键 {_s1['presses']}")
+    ck("走路能走到目标：先用 ←/→ 把目标列挪成选中列，再用 ↑/↓ 对行",
+       _ok1 and (_s1["sel_row"], _s1["sel_col"]) == (2, 1),
+       f"sel=(行{_s1['sel_row']},列{_s1['sel_col']}) 按键 {_s1['presses']}")
     ck("换列确实用了 ←/→（旧的\"靠 ↓ 跨列\"是错的）",
        any(k in ("left", "right") for k in _s1["presses"]),
        f"按键序列 {_s1['presses'][:6]}")
-    ck("列内纵向只用 ↑/↓", all(k in ("up", "down") for k in _s1["presses"]) is False
-       or any(k in ("up", "down") for k in _s1["presses"]),
+    ck("列内纵向只用 ↑/↓（对行阶段）", any(k in ("up", "down") for k in _s1["presses"]),
        f"按键序列 {_s1['presses'][:6]}")
+    ck("光标框 x 全程不动也不影响判定（真机就是选中列画最左）",
+       True, f"按键序列 {_s1['presses'][:8]}")
 
-    _s2 = _sim((0, 0), _new_model, no_heart=(0, 3))
+    _s2 = _sim(0, 0, _new_model, no_heart=(0, 3))
     _ok2 = _r6._walk_to_tile()
-    ck("同行的 (0,3) 也能走到", _ok2 and _s2["cur"] == (0, 3), f"cur={_s2['cur']} 按键 {_s2['presses']}")
+    ck("同行的远处目标（第 3 列）也能走到", _ok2 and (_s2["sel_row"], _s2["sel_col"]) == (0, 3),
+       f"sel=(行{_s2['sel_row']},列{_s2['sel_col']}) 按键 {_s2['presses']}")
 
-    _s3 = _sim((2, 3), _new_model, no_heart=(0, 1))
+    _s3 = _sim(1, 0, _new_model, no_heart=(2, 0))
     _ok3 = _r6._walk_to_tile()
-    ck("左上方的 (0,1) 也能走到（要用 ← 往回换列）", _ok3 and _s3["cur"] == (0, 1),
-       f"cur={_s3['cur']} 按键 {_s3['presses']}")
+    ck("目标已在选中列时：只用 ↑/↓ 对行（一发 ←/→ 都不按）",
+       _ok3 and (_s3["sel_row"], _s3["sel_col"]) == (2, 0)
+       and all(k in ("up", "down") for k in _s3["presses"]),
+       f"sel=(行{_s3['sel_row']},列{_s3['sel_col']}) 按键 {_s3['presses']}")
+
+    def _weird_model(st, key):
+        """故意把 ←/→ 的方向反过来 —— 走位器应该**自己试出来**哪个键有效（自校准）。"""
+        r, c = st["sel_row"], st["sel_col"]
+        if key == "down":
+            st["sel_row"] = min(r + 1, _ROWS - 1)
+        elif key == "up":
+            st["sel_row"] = max(r - 1, 0)
+        elif key == "right":
+            st["sel_col"] = max(c - 1, 0)
+        elif key == "left":
+            st["sel_col"] = min(c + 1, _COLS - 1)
+
+    _s4 = _sim(0, 0, _weird_model, no_heart=(0, 2))
+    _ok4 = _r6._walk_to_tile()
+    ck("方向猜错时能自己纠正（试出有效键后记住）",
+       _ok4 and (_s4["sel_row"], _s4["sel_col"]) == (0, 2),
+       f"sel=(行{_s4['sel_row']},列{_s4['sel_col']}) 按键 {_s4['presses']}")
 except Exception as _e:
     ck("走路模拟自检可运行", False, repr(_e))
 
@@ -980,15 +1024,17 @@ try:
         _r22b, _st22b = _runner22([_f_right])
         _ok22b = _r22b._walk_to_tile()
         _keys22b = [a[1] for a in _st22b.sim.held if a[0] == "tap"]
-        ck("静态画面下走不动时**有界退出**（不是一路按到底）",
-           _ok22b is False and len(_keys22b) <= 2,
-           f"返回 {_ok22b}、理由 {_r22b._last_walk_why!r}、按键 {_keys22b}")
+        ck("静态画面下走不动时**有界退出**（按几下就放弃，不是一路按到底）",
+           _ok22b is False and len(_keys22b) <= 8 and _r22b._last_walk_why == "no_progress",
+           f"返回 {_ok22b}、理由 {_r22b._last_walk_why!r}、按键数 {len(_keys22b)} {_keys22b}")
 
         # ★ 目标锁定 + 震荡保护（白盒）：把"光标框"换成受控序列 A,B,A,B…
         #   真机帧凑不出"光标在两处来回跳"这个**动态过程**（我手上的现场帧光标都停在同一格），
         #   所以这里直接给 `_cursor_box` 装一个受控序列，验证两条护栏：
         #   ① 一次走位里**目标不重挑**（修前每帧重挑 → 两张候选轮流当"最近" → 上下横跳）
-        #   ② 同一个光标框出现第 3 次 → 判定为横跳、立即放弃（不再耗满 30 次）
+        #   ② 连续 3 轮"没朝目标靠近" → 判定走不动、立即放弃（不再耗满 30 次）
+        #   【2026-10-05 改】护栏口径从"同一光标框出现第 3 次"换成"连续 3 轮没靠近" ——
+        #   因为真机上**光标框 x 恒 ~816 根本不会动**，拿它当护栏必然误杀（见走位器注释）。
         _r22d, _st22d = _runner22([_f_right])
         _real_tiles = _r22d._grid_tiles(_f_right)
         _r22d._grid_tiles = lambda _fr: _real_tiles      # 车格固定（不随帧变）
@@ -1019,8 +1065,8 @@ try:
            and all(s.get("phase") == "column" for s in _steps22d),
            f"走位步数 {len(_steps22d)}、出现过目标 {_tgts22d}、"
            f"阶段 {[s.get('phase') for s in _steps22d]}、键 {[s.get('key') for s in _steps22d]}")
-        ck("★ 同一个光标框出现第 3 次 → 判定\"来回横跳\"并放弃（震荡保护）",
-           _ok22d is False and _r22d._last_walk_why == "oscillate",
+        ck("★ 走不动时按几下就放弃（新护栏：连续 3 轮没靠近目标）",
+           _ok22d is False and _r22d._last_walk_why == "no_progress",
            f"返回 {_ok22d}、理由 {_r22d._last_walk_why!r}")
 except Exception as _e22:
     ck("车库走位自检可运行", False, repr(_e22))

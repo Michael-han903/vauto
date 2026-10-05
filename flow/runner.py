@@ -1539,7 +1539,8 @@ class Runner:
         指纹只用于"跳过刚处理过的 / 走不到的"，不用于认路（同款同名车指纹相同）。
         """
         self._last_walk_why = ""
-        visited = []                  # 光标框历史（震荡保护用）
+        stall = 0                     # 连续"没有朝目标靠近"的轮数（震荡/走不动的护栏）
+        _pref = {}                    # 阶段 → 上次确实让目标靠近的那个键（认一次就一直用）
         for _ in range(self.cfg.grid_walk_max):
             self.s.stop.check()
             frame = self.frame()
@@ -1548,16 +1549,6 @@ class Runner:
             if cbox is None:
                 self._last_walk_why = "cursor_unknown"
                 self.log.event("grid_walk_fail", why="cursor_unknown")
-                return False
-
-            # 震荡保护：同一个光标框出现第 3 次 = 已经来回跳了，别再耗着（交给调用方换车）
-            _cb = tuple(int(v) for v in cbox)
-            visited.append(_cb)
-            if visited.count(_cb) >= 3:
-                shot = self._save_evidence(frame, "grid_walk_oscillate")
-                print(f"  [!] 光标在 {list(_cb)} 来回跳（{visited.count(_cb)} 次）→ 放弃这台  证据 {shot}")
-                self.log.event("grid_walk_fail", why="oscillate", cursor=list(_cb), shot=shot)
-                self._last_walk_why = "oscillate"
                 return False
 
             def _ov(a0, a1, b0, b1):
@@ -1591,28 +1582,71 @@ class Runner:
                 return False
             # ② 挑目标：用户口径"先最左列、同列里最上面"（**不按**"离光标最近"挑 —— 那正是横跳来源）
             tgt = min(valid, key=lambda v: (v[1], v[0]))
-            phase = "column" if int(tgt[2]) != int(cbox[0]) else "row"
+            t_r, t_c, t_x, t_y, t_w, t_h, _th, t_sc, t_fp = tgt
+
+            # ★ 走哪一轴、怎么判"走近了"——都不依赖"认出是哪台车"。
+            # 【2026-10-04 晚·真机日志 + 离线探针两个根因】
+            #   ① 以前用"按完光标框位置变没变"判进度 —— 但**选中列永远画在最左**，光标框 x 恒 ~816，
+            #      按 ←/→ 它压根不动 → 每次判成"走不动" → 按反向键 → 放弃 → 日志连出
+            #      `grid_walk_fail why=no_progress` + `grid_target_unreachable`，一台车都够不着
+            #      （用户报的"加技能点时换车逻辑有问题"就是这个）。
+            #   ② 用"标题指纹"认同一台车也**不可靠**：`_title_crop` 返回的是原始像素，而很多车格
+            #      标题区几乎全白 → 不同车互相撞车（离线探针实测 11 格里 6 格指纹都是纯白）。
+            # 现在改成纯几何：列阶段看"目标那一列**在屏幕上的列号**"（0=已经挪到最左=选中列），
+            # 行阶段看"光标框的 y 与目标 y 还差多少"。两者都**只认严格变小**，不认"变了"。
+            dx = int(t_x) - int(cbox[0])
+            dy = int(t_y) - int(cbox[1])
+            phase = "column" if (int(t_c) > 0 and abs(dx) > max(8, t_w // 4)) else "row"
             if phase == "column":
-                key = "right" if int(tgt[2]) > int(cbox[0]) else "left"
+                key = "right" if dx > 0 else "left"
+                d0 = int(t_c)
             else:
-                key = "down" if int(tgt[3]) > int(cbox[1]) else "up"
-            self.log.event("grid_walk_step", phase=phase, key=key, cursor=list(cbox),
-                           target=list(tgt[2:6]), target_cell=[tgt[0], tgt[1]],
-                           cursor_cell=self._cursor_cell(frame, tiles))
-            self.press(key, f"走位[{phase}] → 目标格 {[tgt[0], tgt[1]]}（{key}）")
-            # 等列表**稳定**再判（游戏选择光标有 ~2 秒动画；原来只等 0.6 秒就判"没动" →
-            # 按反向键 → 光标被拽回去 = 用户看到的上下横跳）
-            _f2, _t2, c2 = self._settle_after_key()
-            if c2 is None or tuple(int(v) for v in c2) == _cb:
-                # 这个键没让选择框动 → 换另一个方向键再试一次
-                alt = {"right": "left", "left": "right", "down": "up", "up": "down"}[key]
-                self.log.event("grid_walk_retry", key=alt, phase=phase)
-                self.press(alt, f"走位[{phase}] 换方向 → {alt}")
-                _f3, _t3, c3 = self._settle_after_key()
-                if c3 is None or tuple(int(v) for v in c3) == _cb:
+                key = "down" if dy > 0 else "up"
+                d0 = abs(dy)
+            alt = {"right": "left", "left": "right", "down": "up", "up": "down"}[key]
+            # 第一次可能猜错方向 → 试出来哪个键真有效就**记住**，后面一直用它（省按键）
+            if phase in _pref and _pref[phase] in (key, alt):
+                _order = [_pref[phase], {"right": "left", "left": "right",
+                                         "down": "up", "up": "down"}[_pref[phase]]]
+            else:
+                _order = [key, alt]
+            self.log.event("grid_walk_step", phase=phase, key=_order[0], cursor=list(cbox),
+                           target=[t_x, t_y, t_w, t_h], target_cell=[t_r, t_c],
+                           dx=dx, dy=dy, dist=d0, cursor_cell=self._cursor_cell(frame, tiles))
+
+            def _dist_now(fr_, tl_, cb_):
+                """走完一步后"目标离光标还差多远"（越小越近），纯几何、不认身份。"""
+                _tl = tl_ if tl_ else (self._grid_tiles(fr_) if fr_ is not None else [])
+                _cand = [t for t in _tl if not t[6]] if _tl else []
+                if not _cand or cb_ is None:
+                    return None
+                _t = min(_cand, key=lambda v: (v[1], v[0]))     # 仍按"最左列、同列最上"取
+                if phase == "column":
+                    return int(_t[1])                            # 屏幕上的列号：0 = 最左
+                return abs(int(_t[3]) - int(cb_[1]))             # 行：目标 y 与光标框 y
+
+            got = False
+            for _i, _k in enumerate(_order):
+                self.press(_k, f"走位[{phase}] 目标格 [{t_r}, {t_c}]（{'主' if _i == 0 else '换向'}键 {_k}，"
+                                f"当前差 {d0}）")
+                # 等列表**稳定**再判（游戏选择光标有 ~2 秒动画；只等 0.6 秒会读成"没动"）
+                _fr, _tl, _cb = self._settle_after_key()
+                _d2 = _dist_now(_fr, _tl, _cb)
+                self.log.event("grid_walk_move", key=_k, phase2=phase, dist_before=d0,
+                               dist_after=_d2, cursor=None if _cb is None else list(_cb))
+                if _d2 is not None and _d2 < d0:      # ★ 只认"确实朝目标靠近了"
+                    _pref[phase] = _k                 # 记住这个键，后面不用再猜
+                    got = True
+                    break
+            if got:
+                stall = 0
+            else:
+                stall += 1
+                if stall >= 3:
                     shot = self._save_evidence(self.frame(), "grid_walk_stuck")
-                    print(f"  [!] 走不动（光标框 {cbox}；试过 {key}/{alt}）证据 {shot}")
-                    self.log.event("grid_walk_fail", why="no_progress", cursor=list(cbox), shot=shot)
+                    print(f"  [!] 走不动（目标格 [{t_r}, {t_c}]，差距一直 {d0}；试过 {key}/{alt}）证据 {shot}")
+                    self.log.event("grid_walk_fail", why="no_progress", cursor=list(cbox),
+                                   target_cell=[t_r, t_c], dist=d0, shot=shot)
                     self._last_walk_why = "no_progress"
                     return False
         self._last_walk_why = "budget"
