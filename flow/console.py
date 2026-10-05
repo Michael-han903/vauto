@@ -95,7 +95,11 @@ class Launcher:
         import tkinter as tk
         self.tk = tk
         self.root = tk.Tk()
-        self.root.title("《地平线6》自动化控制台 —— 车库加点 / 挑战刷点")
+        # 【2026-10-05 命名规范】对外产品名 = 基于挑战蓝图的地平线六刷技能点软件；
+        # `vauto` 保留为代号/包名/仓库名/可执行文件名（技术标识，不动：牵涉 import、CI、
+        # 已有快捷方式与说明）。版本号取自 vauto.__version__，避免"标题里写死一个版本"。
+        from vauto import __version__ as _ver
+        self.root.title(f"基于挑战蓝图的地平线六刷技能点软件  v{_ver} —— 控制台")
         self.root.geometry("780x640+40+40")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 

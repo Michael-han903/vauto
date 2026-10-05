@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 run_vauto.py —— 业务运行入口（A 挑战循环 / B 批量刷技能点）
+                —— 属于「基于挑战蓝图的地平线六刷技能点软件」（代号 vauto）
 
 本原型仅用于算法学习。若用于第三方软件，可能违反该软件用户许可协议（EULA），
 并可能触发风控 / 反作弊，存在账号风险。它会**真的操作你的鼠标键盘**，请先 --dry-run。
@@ -34,7 +35,8 @@ from flow.runner import Runner, build_offline_stack, build_stack
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="vauto 业务运行入口（A 挑战循环 / B 刷技能点）")
+    p = argparse.ArgumentParser(description="基于挑战蓝图的地平线六刷技能点软件（代号 vauto）"
+                                            "—— A 挑战循环 / B 刷技能点")
     p.add_argument("--list", action="store_true", help="列出可见窗口后退出")
     p.add_argument("--title", type=str, default="", help="目标窗口标题关键字")
     p.add_argument("--phase", choices=["farm", "spend", "both", "unfav"], default="both",

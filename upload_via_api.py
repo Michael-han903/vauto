@@ -70,7 +70,7 @@ def main() -> int:
     st, js = call("POST", f"{API}/user/repos", tok, {
         "name": repo,
         "private": (not public),
-        "description": "《极限竞速：地平线6》视觉自动化工具（CV + 输入仿真，学习用途）",
+        "description": "基于挑战蓝图的地平线六刷技能点软件 —— 《极限竞速：地平线6》CV+输入仿真（学习用途）",
         "has_issues": True, "has_wiki": False,
     })
     print(f"[仓库] {st} " + ("已创建 ✓" if st == 201 else

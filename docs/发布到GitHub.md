@@ -52,7 +52,7 @@ USER=<你的GitHub用户名>
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
      -H "Accept: application/vnd.github+json" \
      https://api.github.com/user/repos \
-     -d "{\"name\":\"vauto\",\"private\":true,\"description\":\"《地平线6》视觉自动化工具（学习用途）\"}"
+     -d "{\"name\":\"vauto\",\"private\":true,\"description\":\"基于挑战蓝图的地平线六刷技能点软件（CV+输入仿真，学习用途）\"}"
 
 # 2) 上传全部跟踪文件（脚本逐文件 PUT，自动跳过二进制大小限制外的文件）
 python upload_via_api.py $USER vauto
