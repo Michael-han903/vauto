@@ -1151,5 +1151,51 @@ try:
 except Exception as _e23:
     ck("rehold 自检可运行", False, repr(_e23))
 
+print("\n㉔ 【2026-10-06 新增】控制台选窗口不再\"乱挑\"（用户实测崩溃：标题变成 104310437/12960）")
+# 用户原话："[崩溃] ...RuntimeError: 找不到标题包含 '104310437/12960' 的窗口 ... 怎么会这样呢？"
+# 根因：控制台**比游戏先开**时，窗口列表里还没有 Forza，旧代码的兜底是"选列表第一个窗口"
+# （他那次是 104310437/12960）→ 一按开始就崩。现在绝不乱挑：只认 forza/地平线，认不到就留空+提示。
+try:
+    from flow.console import pick_window_title as _pwt24
+
+    _junk = ["104310437/12960", "设置", "NVIDIA GeForce Overlay", "Program Manager"]
+    _t24, _m24 = _pwt24(_junk, "")
+    ck("★ 列表里没有游戏时**不挑任何窗口**（修前会选中列表第一个 → 一发车就崩）",
+       _t24 == "" and "没找到 Forza" in _m24, f"标题={_t24!r} 提示={_m24.strip()!r}")
+    ck("★ 上面这个场景里绝不能出现那个无关窗口",
+       "104310437" not in _t24, f"标题={_t24!r}")
+
+    _t24b, _m24b = _pwt24(_junk, "104310437/12960")
+    ck("当前值还在列表里但不是游戏 → 保留用户选择，但**明确警告**（不悄悄拿它发车）",
+       _t24b == "104310437/12960" and "不是游戏" in _m24b, f"标题={_t24b!r} 提示={_m24b.strip()!r}")
+
+    _t24b2, _m24b2 = _pwt24(_junk, "已经关掉的窗口某某")
+    ck("当前值已经不在列表里 + 没有游戏 → 清空并提示（不再拿它去发车）",
+       _t24b2 == "" and "游戏开着吗" in _m24b2, f"标题={_t24b2!r}")
+
+    _t24c, _m24c = _pwt24(["Forza Horizon 6"] + _junk, "104310437/12960")
+    ck("游戏出现后 → 自动切回游戏窗口", _t24c == "Forza Horizon 6", f"标题={_t24c!r}")
+
+    _t24d, _m24d = _pwt24(_junk, "设置")
+    ck("当前值在列表里但不是游戏、也没有游戏窗口 → 原样保留（不乱动用户选择）",
+       _t24d == "设置", f"标题={_t24d!r}")
+
+    _t24e, _m24e = _pwt24(["Forza Horizon 6"], "")
+    ck("有游戏时自动选中游戏", _t24e == "Forza Horizon 6" and _m24e == "", f"标题={_t24e!r}")
+
+    # build_stack 的报错也要能直接定位（把当前可见窗口列出来）
+    try:
+        from flow.runner import build_stack as _bs24
+        from flow.config import RunConfig as _RC24b
+        _bs24(_RC24b(), title_key="这辈子不存在的窗口标题zzz")
+        ck("build_stack 报错带候选窗口", False, "竟然没抛异常？")
+    except RuntimeError as _e24:
+        ck("★ 找不到窗口时的报错**列出当前可见窗口**（修前只有一句话，无从判断游戏开没开）",
+           "当前可见窗口" in str(_e24), f"报错={str(_e24)[:120]!r}")
+    except Exception as _e24:
+        ck("build_stack 报错带候选窗口", False, repr(_e24))
+except Exception as _e24:
+    ck("选窗口自检可运行", False, repr(_e24))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

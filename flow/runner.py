@@ -38,7 +38,7 @@ import numpy as np
 
 from vauto import (AbortedByUser, EmergencyStop, FocusGuard, Humanizer, InputSimulator,
                    TemplateMatcher, TimingProfile, WindowCapture, block_max_abs_diff,
-                   client_to_screen, enable_dpi_awareness, find_window_by_title,
+                   client_to_screen, enable_dpi_awareness, find_window_by_title, list_windows,
                    load_calibration, build_detectors, mean_abs_diff, scaled_frame,
                    wait_stable, wait_active)
 from vauto.calib import calibration_table
@@ -102,7 +102,16 @@ def build_stack(cfg: RunConfig, title_key: Optional[str] = None) -> Stack:
     key = title_key or cfg.title_key
     hwnd = find_window_by_title(key)
     if hwnd is None:
-        raise RuntimeError(f"找不到标题包含 {key!r} 的窗口，先跑 py -3.14 run_vauto.py --list")
+        # 【2026-10-06】报错要能直接定位：把"现在到底有哪些窗口"列出来 ——
+        # 用户实测的崩溃（控制台比游戏先开，下拉框被塞进无关窗口 104310437/12960）
+        # 当时只看到"找不到标题包含 X 的窗口"，无从判断游戏开没开。
+        try:
+            _cands = [t for _h, t, _c in list_windows() if (t or "").strip()][:8]
+        except Exception:
+            _cands = []
+        raise RuntimeError(
+            f"找不到标题包含 {key!r} 的窗口。当前可见窗口：{_cands}\n"
+            f"    游戏开着吗？在控制台点「刷新」再从下拉里选；命令行可跑 py -3.14 run_vauto.py --list")
     capture = WindowCapture(hwnd, client_only=True)
     matcher = TemplateMatcher(grayscale=True, threshold=0.8)
     humanizer = Humanizer(profile=TimingProfile(), seed=None)
@@ -1457,8 +1466,8 @@ class Runner:
             self.sleep(0.35)
         return False
 
-    def _settle_after_key(self, timeout: float = 3.0, need: int = 2,
-                          poll: float = 0.25):
+    def _settle_after_key(self, timeout: float = 3.5, need: int = 3,
+                          poll: float = 0.25, min_total: float = 1.2):
         """按完方向键后，等列表**真正稳下来**再判 —— 返回 (frame, tiles, cursor_box)。
 
         【2026-10-04 晚·真机采样得到的根因】游戏的选择光标有 **~2 秒动画**。按键之后每 0.2s
@@ -1488,7 +1497,11 @@ class Runner:
                    tuple((int(t[2]), int(t[3]), bool(t[6])) for t in tiles))
             if sig == last_sig:
                 same += 1
-                if same >= need:
+                # 【2026-10-05 晚】除了"连续 need 次一样"，还要**离按键至少 min_total 秒**：
+                # 真机上按键后那 ~2 秒动画里，开头有一小段"还没开始动"的静止窗口，光看
+                # "连续两次一样"会在这里**假稳**（实跑日志里就是这么读出 dist 0 → 下一帧
+                # 又变回 513，来回磨到预算耗尽）。
+                if same >= need and (time.monotonic() - t0) >= min_total:
                     return frame, tiles, box
             else:
                 same = 0
@@ -1632,9 +1645,15 @@ class Runner:
                 # 等列表**稳定**再判（游戏选择光标有 ~2 秒动画；只等 0.6 秒会读成"没动"）
                 _fr, _tl, _cb = self._settle_after_key()
                 _d2 = _dist_now(_fr, _tl, _cb)
+                # 【2026-10-05 晚·真机日志】进步必须是**实质性的**：行方向上一个"9px 的改善"
+                # （513→504）其实还是同一行没动，却会把 stall 清零 → 一直磨到预算耗尽
+                # （他那次 10 次 grid_walk_fail 全是 budget）。要求至少改善半行/一列才算数，
+                # 真正对齐时是由"到站判据"（光标框压住目标格）来接住的，不靠这个距离。
+                _need = 1 if phase == "column" else max(1, int(t_h * 0.5))
                 self.log.event("grid_walk_move", key=_k, phase2=phase, dist_before=d0,
-                               dist_after=_d2, cursor=None if _cb is None else list(_cb))
-                if _d2 is not None and _d2 < d0:      # ★ 只认"确实朝目标靠近了"
+                               dist_after=_d2, need=_need,
+                               cursor=None if _cb is None else list(_cb))
+                if _d2 is not None and _d2 <= d0 - _need:      # ★ 只认"确实朝目标靠近了"
                     _pref[phase] = _k                 # 记住这个键，后面不用再猜
                     got = True
                     break

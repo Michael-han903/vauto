@@ -55,6 +55,41 @@ class _Tee:
         return False
 
 
+def pick_window_title(titles, cur: str = "") -> tuple:
+    """纯逻辑：根据"当前记得的标题"和"现在可见的标题列表"决定下拉框该显示什么、给什么提示。
+
+    返回 `(新标题, 提示语)`。规则来自 2026-10-06 用户实测的一次崩溃：
+      * **只认 forza/地平线 是游戏**；
+      * **绝不**"挑不到就选列表第一个窗口" —— 用户先开控制台后开游戏时，下拉框被塞进一个
+        无关窗口（他遇到的是 `104310437/12960`），一按「开始」就崩在 build_stack
+        "找不到标题包含 X 的窗口"；现在宁可为空 + 提示，也不乱挑；
+      * 当前值还在列表里 → 保留；若它不是游戏而列表里有游戏 → 自动换成游戏（并说明）；
+      * 当前值不在了 → 有游戏就换游戏，没游戏就留空 + 提示。
+    """
+    titles = [t for t in (titles or []) if (t or "").strip()]
+    cur = (cur or "").strip()
+
+    def _is_game(t: str) -> bool:
+        t = (t or "").lower()
+        return "forza" in t or "地平线" in t
+
+    forza = next((t for t in titles if _is_game(t)), "")
+    if cur and cur in titles:
+        if forza and not _is_game(cur):
+            return forza, f"[i] 自动把目标窗口从「{cur}」改成了「{forza}」（那才是游戏）\n"
+        if not _is_game(cur) and not forza:
+            # 没有游戏窗口、当前选的又不是游戏 → **不替你改**（你自己选的），但说一句
+            return cur, f"[!] 当前选的目标窗口「{cur}」看着不是游戏 —— 确认没选错？\n"
+        return cur, ""
+    if forza:
+        msg = f"[i] 原来的「{cur}」已经不在窗口列表里 → 自动切到「{forza}」\n" if cur else ""
+        return forza, msg
+    if cur:
+        return "", (f"[!] 窗口列表里找不到「{cur}」，也没有 Forza 窗口 —— 游戏开着吗？"
+                    "开起来后点「刷新」再选\n")
+    return "", "[!] 没找到 Forza 窗口 —— 先把游戏开起来，再点「刷新」\n"
+
+
 class Launcher:
     def __init__(self):
         import tkinter as tk
@@ -248,14 +283,23 @@ class Launcher:
         except Exception as exc:
             titles = [f"(列举窗口失败: {exc})"]
         self.cmb_title["values"] = titles
-        cur = self.var_title.get()
-        pick = cur if cur in titles else ""
-        if not pick:
-            pick = next((t for t in titles if "forza" in t.lower() or "地平线" in t), "")
-        if pick:
-            self.var_title.set(pick)
-        elif titles and not cur:
-            self.var_title.set(titles[0])
+        # 【2026-10-06 修·用户实测崩溃根因】"挑不到 Forza 就选列表第一个窗口"的兜底害死人：
+        # 用户先开控制台、后开游戏时，下拉框被塞进一个**无关窗口**（他遇到的是
+        # `104310437/12960`），一按「开始」就崩在 build_stack"找不到标题包含 X 的窗口"。
+        # 现在规则抽成纯函数 pick_window_title()（自检里也钉住了），**绝不乱挑**。
+        pick, msg = pick_window_title(titles, self.var_title.get())
+        if msg:
+            self._say(msg)
+        self.var_title.set(pick)
+
+    def _title_exists(self, title: str) -> bool:
+        """窗口列表里有没有标题包含 `title` 的窗口（用来在"发车"前拦住崩掉的调用）。"""
+        try:
+            from vauto import list_windows
+            t = (title or "").lower()
+            return any(t in (w or "").lower() for _h, w, _c in list_windows())
+        except Exception:
+            return True          # 列举失败就别挡着用户
 
     def _start(self) -> None:
         # 【2026-10-03 修】原来 `if self.running: return` 是静默无响应 ✗：
@@ -266,8 +310,19 @@ class Launcher:
             return
         self.running = False
         title = self.var_title.get().strip()
+        # 【2026-10-06 修】发车前**先刷新一次窗口列表**（控制台常比游戏先开）→ 自动切到游戏；
+        # 再**校验窗口真的存在** → 不存在就给出人话提示、不发车（以前是直接崩在 build_stack）。
+        try:
+            self._refresh_windows()
+            title = self.var_title.get().strip() or title
+        except Exception:
+            pass
         if not title:
-            self._say("[!] 先选目标窗口（点「刷新」再下拉选 Forza Horizon 6）\n")
+            self._say("[!] 先选目标窗口（游戏开起来 → 点「刷新」→ 下拉选 Forza Horizon 6）\n")
+            return
+        if not self._title_exists(title):
+            self._say(f"[!] 窗口列表里找不到标题包含「{title}」的窗口 —— 游戏开着吗？"
+                      "开起来后点「刷新」重选（不再直接崩）\n")
             return
         try:
             int(self.var_rounds.get()); int(self.var_cars.get()); int(self.var_cycles.get())
