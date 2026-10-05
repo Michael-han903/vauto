@@ -217,6 +217,23 @@ class _Logger:
 # --------------------------------------------------------------------------- #
 # 主状态机
 # --------------------------------------------------------------------------- #
+def _sel_column_tiles(tiles, cur) -> list:
+    """从检出的车格里挑出"**当前选中列**"的那些格 —— 用户 2026-10-05 口径。
+
+    为什么只挑一列：用户原话"每次方向键向右翻页的时候都只会多一列新的出来，可以只判断
+    这一列有没有未收藏车辆"。真机机制是**选中列永远画在最左**（光标就在里面），按 → 只是
+    让"选中列"往右挪一格并补进右边一列新的 → 找车根本不用 ←/→，只在选中列里 ↑/↓ 对行。
+
+    `cur` 是 **车格坐标 (行, 列)**（来自 `_cursor_cell`），不是像素框 —— 这里踩过坑：
+    按"像素框"去写（取 cur[2] 当宽度）会直接 IndexError。
+    """
+    if not tiles:
+        return []
+    col = int(cur[1]) if cur is not None else min(int(t[1]) for t in tiles)
+    sel = [t for t in tiles if int(t[1]) == col]
+    return sel if sel else list(tiles)      # 兜底：认不出列就别缩范围
+
+
 class Runner:
     def __init__(self, stack: Stack, cfg: RunConfig) -> None:
         self.s = stack
@@ -1529,8 +1546,14 @@ class Runner:
         except Exception:
             return None
 
-    def _walk_to_tile(self, target_fp=None, tries_each: int = 2) -> bool:
+    def _walk_to_tile(self, target_fp=None, tries_each: int = 2, given=None):
         """把选择框挪到目标车格上 —— 按**用户 2026-10-04 晚给的真实操作模型**重写。
+
+        `given` = 调用方（扫描器）**已经选好的那一台** `((r,c,x,y,w,h,has,sc), fp)`。
+        【2026-10-05 晚】为什么要传：扫描器按"选中列 + 同列最上"选，走位器自己也按同一条规则
+        重挑 —— 看着一样，但两边**读帧的时刻不同**、指纹又不可靠，于是出现过
+        "扫描说有 3 台没♥、走位器说视野里没有可处理的车格 → 把那台车拉黑"（白白漏 3 台）。
+        现在：走位器自己挑不出候选时，**直接用扫描器给的那台**，绝不因为口径差就放弃。
 
         用户原话：
           「在列表里面的时候，箭头上下只会在当前列切换，箭头左右会在左右列之间切换，
@@ -1589,9 +1612,19 @@ class Runner:
                     self.log.event("grid_walk_stop", cell=[r, c], heart_score=round(sc, 3),
                                    why="选择框压在待处理的车上了（到站，可以按回车了）")
                     return True
+            if not valid and given is not None:
+                # 【2026-10-05 晚】自己挑不出候选，但扫描器给了目标 → 就用它（见函数注释）。
+                _g_t, _g_fp = given
+                if _g_t is not None:
+                    self.log.event("grid_walk_use_given", cell=[_g_t[0], _g_t[1]],
+                                   why="走位器自己挑不出候选，改用扫描器选好的那台")
+                    valid = [(int(_g_t[0]), int(_g_t[1]), int(_g_t[2]), int(_g_t[3]),
+                              int(_g_t[4]), int(_g_t[5]), bool(_g_t[6]),
+                              float(_g_t[7]) if _g_t[7] == _g_t[7] else 0.0, _g_fp)]
             if not valid:
+                shot = self._save_evidence(frame, "grid_walk_no_candidate")
                 self._last_walk_why = "no_candidate"
-                self.log.event("grid_walk_stop", why="视野里没有可处理的车格")
+                self.log.event("grid_walk_stop", why="视野里没有可处理的车格", shot=shot)
                 return False
             # ② 挑目标：用户口径"先最左列、同列里最上面"（**不按**"离光标最近"挑 —— 那正是横跳来源）
             tgt = min(valid, key=lambda v: (v[1], v[0]))
@@ -2003,7 +2036,23 @@ class Runner:
             # 候选 = 「没 ♥」**且**「本次会话还没处理过」（指纹集合，旧机制）。
             todo = []
             skipped = 0
-            for t in tiles:
+            # ---------- 【2026-10-05 晚·用户口径】只看"**当前选中列**" ----------
+            # 用户原话："除了从这个界面点进去的第一页是全屏幕的未鉴别车辆，每次方向键向右
+            # 翻页的时候都只会多一列新的出来，**可以只判断这一列有没有未收藏车辆**"。
+            # 含义（也是游戏的真实机制）：选中列**永远画在最左**，光标就在它里面；
+            # 按 → 只是把"选中列"往右挪一格（视图跟着滑，最右边补进一列新的）。
+            # 于是找车根本不用 ←/→：只要在**选中列**里用 ↑/↓ 对行即可。
+            # 顺带解决了两个老毛病：
+            #   ① 扫描器（_order_candidates）与走位器（min(列,行)）**两套候选口径**不一致 →
+            #      日志里出现过"扫描说有 3 台没♥、走位器却说视野里没有可处理的车格"，
+            #      接着把那台车拉黑（grid_target_unreachable）→ 白白漏掉 3 台车；
+            #   ② 每屏都把 8~12 格全检一遍（每列约 2 秒），整库翻完要 8 分钟 ✗。
+            # 注意：这里的 `cur` 是**车格坐标 (行, 列)**（来自 _cursor_cell），不是像素框
+            # （光标框在 _walk_to_tile 里另取）。所以"选中列" = 光标那一列 = 屏幕上最左那一列。
+            _sel_col = None if cur is None else int(cur[1])
+            tiles_sel = _sel_column_tiles(tiles, cur)
+            _sel_col = int(tiles_sel[0][1]) if tiles_sel else _sel_col
+            for t in tiles_sel:
                 if t[6]:                        # 有 ♥ → 用户标过"已点满"
                     continue
                 # 【2026-10-03 用户口径变更】"第一列=当前车"的位置规则**已作废**
@@ -2032,10 +2081,15 @@ class Runner:
                                    heart_score=round(t[7], 3))
                 todo.append((t, fp))
             todo = self._order_candidates(todo)
-            hearts = [t[7] for t in tiles if t[7] == t[7]]
-            no_heart = sum(1 for t in tiles if not t[6])
-            self.log.event("grid_scan", attempt=attempt, tiles=len(tiles), todo=len(todo),
-                           no_heart=no_heart, fp_skipped=skipped, seen=len(self._seen_cars),
+            # 统计口径也统一到"选中列"（否则日志会出现"扫描说有 3 台没♥、走位器却说没有
+            # 可处理的车格"这种自相矛盾 —— 那 3 台其实在别的列里，走位器只认选中列）。
+            hearts = [t[7] for t in tiles_sel if t[7] == t[7]]
+            no_heart = sum(1 for t in tiles_sel if not t[6])
+            screen_no_heart = sum(1 for t in tiles if not t[6])
+            self.log.event("grid_scan", attempt=attempt, tiles=len(tiles),
+                           sel_tiles=len(tiles_sel), sel_col=_sel_col, todo=len(todo),
+                           no_heart=no_heart, screen_no_heart=screen_no_heart,
+                           fp_skipped=skipped, seen=len(self._seen_cars),
                            cursor=None if cur is None else list(cur),
                            heart_min=round(min(hearts), 3) if hearts else None,
                            heart_max=round(max(hearts), 3) if hearts else None)
@@ -2043,8 +2097,9 @@ class Runner:
                 (r, c, bx, by, bw, bh, has, sc), fp = todo[0]
                 if fp is None:
                     fp = self._title_crop(frame, bx, by, bw, bh)
-                print(f"  [找] 第 {attempt} 屏：{len(tiles)} 格 / 待处理 {len(todo)}"
-                      f"（没♥ {no_heart} − 本次已弄过 {skipped}）→ 去第{r}行第{c}列（♥ 分 {sc:.3f}）")
+                print(f"  [找] 第 {attempt} 屏：选中列 {no_heart} 格没♥ / 待处理 {len(todo)}"
+                      f"（同屏共 {screen_no_heart} 台没♥，其余列留到翻页时再看）"
+                      f" → 去第{r}行第{c}列（♥ 分 {sc:.3f}）")
                 shot = self._save_evidence(frame, f"target_r{r}c{c}")
                 self.log.event("grid_target", row=r, col=c, heart_score=round(sc, 3),
                                cand=len(todo), fp_ok=fp is not None, shot=shot)
@@ -2052,7 +2107,7 @@ class Runner:
                 # "抛弃掉鼠标，只用方向键找车"。原来那段"鼠标点这一格"是过渡方案
                 # （当时以为方向键走不准，实测命中率也只有 ~7%）——现在有了用户给的
                 # 真实操作模型（↑/↓ 列内、←/→ 换列），方向键完全够用且可验证。
-                sel = self._walk_to_tile()
+                sel = self._walk_to_tile(given=(todo[0][0], fp))
                 if sel is not True:
                     # 走不到这台 → 记下它的指纹（本轮不再选它），换下一台继续，
                     # 不能因为一台够不着就把整个 B 阶段停掉（2026-10-03 就是这么失败的）
