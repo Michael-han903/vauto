@@ -42,8 +42,8 @@ def parse_args(argv=None):
     p.add_argument("--phase", choices=["farm", "spend", "both", "unfav"], default="both",
                    help="farm=只打挑战；spend=只刷技能点；both=先 farm 再 spend")
     p.add_argument("--rounds", type=int, default=4, help="farm 阶段跑几轮挑战（默认 4）")
-    p.add_argument("--cars", type=int, default=6,
-                   help="spend 阶段最多处理几台车（默认 6；**0 = 一直解锁到「技能点不足」**）")
+    p.add_argument("--cars", type=int, default=0,
+                   help="spend 阶段最多处理几台车（**默认 0 = 不限**，一直解锁到「技能点不足」）")
     p.add_argument("--cycles", type=int, default=0,
                    help="主循环次数；**0（默认）= 一直循环**（花↔刷往复，靠 F1 停）")
     p.add_argument("--farm-first", action="store_true",

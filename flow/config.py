@@ -222,7 +222,10 @@ class RunConfig:
     # ---- 走法开关 ----
     phase: str = "both"                 # farm / spend / both
     rounds: int = 4                     # farm 阶段跑几轮挑战
-    cars: int = 6                       # spend 阶段最多几台车
+    cars: int = 0                       # spend 阶段最多几台车；**0 = 不限**（一直解锁到「技能点不足」）
+    #   【2026-10-06 用户要求】"把最多处理车数和循环次数的默认值都改成 0" ——
+    #   控制台/命令行本来就已经是 0；这里把**库默认**也改成 0，三条路一致。
+    #   注意：0 不是"不处理"，而是"不设上限"（runner：max_cars>0 才当上限，否则用 cars_cap 兜底）。
     ledger_path: str = "logs/ledger.json"
     log_dir: str = "logs"
 
