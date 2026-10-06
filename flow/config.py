@@ -51,6 +51,12 @@ class RunConfig:
     race_rehold_after: float = 12.0     # 【2026-10-04】比赛里画面这么久没变 → 重新按一次 W
     #   （失焦/暂停会把按键状态丢掉，而程序以为自己还按着；0=关。每轮最多补按 3 次）
 
+    # ---- 磁盘占用（【2026-10-06】用户："不会再增加占用了吧？"）----
+    # 实测：PNG 证据图一天能涨 200~600MB（433 张 = 1.2GB）→ 默认改存 JPEG + 目录封顶。
+    evidence_jpeg: bool = True          # 证据图存 JPEG（质量 85，约省 90%）；False = 存 PNG
+    evidence_max_mb: float = 300.0      # 证据图目录总量上限（MB），超了从最旧的删；0 = 不限
+    keep_run_logs: int = 20             # 流水日志只留最近几次运行（0 = 不限）
+
     # ---- 进赛事（2026-10-02 用户口述序列 + 7 张截图；见 docs/业务实测要点.md 第 6 节）----
     # 主菜单(剧情页) → 点「创意中心」标签 → Enter(EventLab) → ↓ → Enter(参加挑战)
     #   → Backspace(搜索面板) → ↑ → Enter(共享代码) → 输入代码 → Enter → ↓ → Enter(确认)

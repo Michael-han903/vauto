@@ -653,16 +653,85 @@ class Runner:
         return frame[y:y + h, x:x + w]
 
     def _save_evidence(self, frame: np.ndarray, tag: str) -> str:
-        """存下"出问题那一刻"的画面 —— 无人值守跑挂后能回答"当时停在哪儿"（存到 logs/）。"""
+        """存下"出问题那一刻"的画面 —— 无人值守跑挂后能回答"当时停在哪儿"（存到 logs/）。
+
+        【2026-10-06·用户要求"占用别再涨"】三处改进：
+        ① 默认存 **JPEG（质量 85）** 而不是 PNG —— 实测 4K PNG 每张 1.2~1.8MB，JPEG 后
+           ~200KB（省 ~90%），复盘看图照样清楚；
+        ② 证据图目录**总量封顶**（`evidence_max_mb`，默认 300MB），超了从最旧的删；
+        ③ 流水日志只留最近 `keep_run_logs` 次（默认 20）。
+        注意：`templates/`（判据模板）和 `golden_frames/`（标定素材）**永不清理** ——
+        它们不是运行时产物。
+        """
         try:
             d = Path(self.cfg.log_dir)
             d.mkdir(parents=True, exist_ok=True)
             ts = time.strftime("%Y%m%d_%H%M%S")
-            path = d / f"{tag}_{ts}.png"
-            cv2.imencode(".png", frame)[1].tofile(str(path))
+            if bool(getattr(self.cfg, "evidence_jpeg", True)):
+                path = d / f"{tag}_{ts}.jpg"
+                # cv2.imwrite 在非 ASCII 路径上会静默失败（vauto/matching.py 里记过这个坑）→ 用 imencode
+                cv2.imencode(".jpg", frame,
+                             [int(cv2.IMWRITE_JPEG_QUALITY), 85])[1].tofile(str(path))
+            else:
+                path = d / f"{tag}_{ts}.png"
+                cv2.imencode(".png", frame)[1].tofile(str(path))
+            self._prune_logs()
             return str(path)
         except Exception as exc:
             return f"(存图失败: {exc})"
+
+    def _prune_logs(self, min_interval: float = 60.0) -> dict:
+        """按"占用封顶"清理 logs/：证据图按总量删最旧、流水日志只留最近 N 次。
+
+        用户 2026-10-06 问"不会再增加占用了吧？" —— 实测证据图一天能涨 200~600MB
+        （433 张就 1.2GB），所以给个硬上限，不再无限涨。
+        """
+        now = time.monotonic()
+        if now - float(getattr(self, "_prune_at", 0.0)) < min_interval:
+            return {}
+        self._prune_at = now
+        out = {"images_deleted": 0, "mb_freed": 0.0, "logs_deleted": 0}
+        try:
+            d = Path(self.cfg.log_dir)
+            if not d.is_dir():
+                return out
+            cap_mb = float(getattr(self.cfg, "evidence_max_mb", 300.0) or 0)
+            imgs = sorted([p for p in d.iterdir()
+                           if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")],
+                          key=lambda p: p.stat().st_mtime)           # 旧 → 新
+            if cap_mb > 0 and imgs:
+                total = sum(p.stat().st_size for p in imgs) / 1048576.0
+                for p in imgs:
+                    if total <= cap_mb:
+                        break
+                    try:
+                        sz = p.stat().st_size / 1048576.0
+                        p.unlink()
+                        total -= sz
+                        out["images_deleted"] += 1
+                        out["mb_freed"] += sz
+                    except Exception:
+                        pass
+            keep_runs = int(getattr(self.cfg, "keep_run_logs", 20) or 0)
+            runs = sorted(d.glob("run_*.jsonl"), key=lambda p: p.stat().st_mtime)
+            if keep_runs > 0 and len(runs) > keep_runs:
+                for p in runs[:len(runs) - keep_runs]:
+                    try:
+                        p.unlink()
+                        out["logs_deleted"] += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if out["images_deleted"] or out["logs_deleted"]:
+            try:
+                self.log.event("logs_pruned", **out)
+            except Exception:
+                pass
+            print(f"  [清理] 证据图封顶 {getattr(self.cfg, 'evidence_max_mb', 300):.0f}MB → "
+                  f"删最旧 {out['images_deleted']} 张（释放 {out['mb_freed']:.0f}MB）"
+                  f"、旧流水日志 {out['logs_deleted']} 份")
+        return out
 
     # ---------------- A 阶段 ---------------- #
     def phase_farm(self, rounds: int) -> dict:
