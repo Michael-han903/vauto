@@ -1226,5 +1226,34 @@ try:
 except Exception as _e25:
     ck("选中列自检可运行", False, repr(_e25))
 
+print("\n㉖ 【2026-10-06 新增】指纹空白守卫：纯白车名区不再冒充「这台车处理过」（漏车根因）")
+# 用户报"还是会漏车欸"。根因之一：车名裁图经常整片纯白（探针实测 11 格里 6 格），两张纯白
+# 的差值≈0 → 被判成"同一台车" → 跳过一台真正没♥的车。现在纯色裁图一律当"没有指纹"。
+try:
+    import numpy as _np26
+    from flow.config import RunConfig as _RC26
+    from flow.runner import Runner as _R26, build_offline_stack as _BOS26
+
+    _cfg26 = _RC26()
+    _cfg26.log_dir = tempfile.mkdtemp(prefix="vauto_selftest26_")
+    _r26 = _R26(_BOS26(), _cfg26)
+    _white26 = _np26.full((300, 900, 3), 250, dtype=_np26.uint8)          # 纯白车格（车名区空白）
+    _text26 = _white26.copy()
+    _text26[20:100, 40:600] = 60                                          # 假装有车名文字
+    ck("★ 纯白车名区 → 不给指纹（修前会被当成「处理过」→ 跳过真车）",
+       _r26._title_crop(_white26, 0, 0, 648, 488) is None,
+       f"返回 {type(_r26._title_crop(_white26, 0, 0, 648, 488))}")
+    _fp26 = _r26._title_crop(_text26, 0, 0, 648, 488)
+    ck("有文字的车名区照旧给指纹", _fp26 is not None and getattr(_fp26, "size", 0) > 0,
+       f"shape {None if _fp26 is None else _fp26.shape}")
+
+    # 端到端：两台「纯白车名区」的车**不能**互相冒充
+    _r26._seen_cars = [_r26._title_crop(_text26, 0, 0, 648, 488)]
+    ck("★ 纯白区不会被判成「已处理」（漏车的直接路径）",
+       _r26._fp_seen(_r26._title_crop(_white26, 0, 0, 648, 488)) is False)
+    ck("真空指纹为空时不炸且不跳过", _r26._fp_seen(None) is False)
+except Exception as _e26:
+    ck("指纹空白守卫自检可运行", False, repr(_e26))
+
 print("\n结果:", "全部通过 ✅" if not fails else f"{len(fails)} 项失败 ❌ -> {fails[:5]}")
 sys.exit(1 if fails else 0)

@@ -1254,12 +1254,27 @@ class Runner:
 
     # ---------------- 收藏(♥)驱动的选车（2026-10-03 用户定的新口径）---------------- #
     def _title_crop(self, frame, x, y, w, h):
-        """按车格 bbox 裁车名文字（灰度），当车格指纹用。"""
+        """按车格 bbox 裁车名文字（灰度），当车格指纹用。
+
+        【2026-10-06 · 用户报"还是会漏车"的根因之一】这个指纹**经常是没有信息量的纯白**：
+        离线探针实测 11 个车格里 **6 格的"车名区"整片纯白**（车名只在某些格/某些状态下绘制）。
+        两张纯白裁图的差值 ≈ 0 → `_fp_diff` 判定"同一台车" → `_fp_seen` 说"这台本会话处理过"
+        → **直接跳过一台真正没♥的车** ✗（用户最忌讳的漏车；今天实跑日志里 `fp_skipped` 合计
+        109 格）。修法：太均匀（std < 4）就当**没有指纹**（返回 None）→ 上层一律判"没见过"
+        → 宁可重复处理，也绝不因为两张空白图撞在一起而跳过真车。
+        """
         tx, ty = int(x) + 18, int(y) + 8
         tw, th = min(600, int(w) - 30), 92
         if tw <= 0 or ty + th > frame.shape[0] or tx + tw > frame.shape[1]:
             return None
-        return cv2.cvtColor(frame[ty:ty + th, tx:tx + tw], cv2.COLOR_BGR2GRAY)
+        crop = cv2.cvtColor(frame[ty:ty + th, tx:tx + tw], cv2.COLOR_BGR2GRAY)
+        try:
+            if float(crop.std()) < 4.0:      # 纯白/纯色 → 没有可区分的信息
+                self._fp_blank = getattr(self, "_fp_blank", 0) + 1
+                return None
+        except Exception:
+            return None
+        return crop
 
     def _grid_hsv(self, frame):
         """车格区域的 HSV 子图 + 它的原点 (ox, oy)。
@@ -1971,7 +1986,15 @@ class Runner:
         # （日志 run_20261003_115546：一轮里 grid_target_unreachable 出现 10 次，
         #   两次扫描之间隔了 46 秒）。"同款同名车指纹相同"用"只记本轮"解决就够了。
         self._unreachable = []
-        # 品牌翻页计数同理：它统计的是"**本轮**连翻几个品牌都没找到没♥的车"。
+        # 【2026-10-06·用户质疑"指纹是干什么的？判断收藏不是只看图标吗？"】对：**判有没有收藏
+        # 只看 ♥ 图标**，指纹从来不是判据。它只是"这台车**本次**是不是刚处理过"的备忘，
+        # 只有两个用途：① 加收藏万一没生效时**防止同一台车被反复捡起**（死循环）；
+        # ② 省掉重复进精通页的 ~70 秒。
+        # 但它是**会话级**的 → 一台车一旦撞过指纹（车名区纯白会互相撞，见 _title_crop），
+        # 之后每一轮都被跳过 → 正是用户看到的"漏车"。
+        # 改成**每进一次列表清空**：一次翻页内仍然防重复，下一轮重新给机会 ——
+        # 符合用户口径"宁可重复处理，绝不许跳过该处理的对象"。
+        self._seen_cars = []
         # 原来用 getattr 累加、跨轮不重置 → 第二轮起带着上一轮的计数，累计到 6 之后
         # 每一轮都会被判成"没有可处理的车"直接收工。
         self._brand_jumps = 0
@@ -2089,7 +2112,8 @@ class Runner:
             self.log.event("grid_scan", attempt=attempt, tiles=len(tiles),
                            sel_tiles=len(tiles_sel), sel_col=_sel_col, todo=len(todo),
                            no_heart=no_heart, screen_no_heart=screen_no_heart,
-                           fp_skipped=skipped, seen=len(self._seen_cars),
+                           fp_skipped=skipped, fp_blank=getattr(self, "_fp_blank", 0),
+                           seen=len(self._seen_cars),
                            cursor=None if cur is None else list(cur),
                            heart_min=round(min(hearts), 3) if hearts else None,
                            heart_max=round(max(hearts), 3) if hearts else None)
