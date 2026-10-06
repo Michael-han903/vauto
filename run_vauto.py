@@ -44,8 +44,8 @@ def parse_args(argv=None):
     p.add_argument("--rounds", type=int, default=4, help="farm 阶段跑几轮挑战（默认 4）")
     p.add_argument("--cars", type=int, default=0,
                    help="spend 阶段最多处理几台车（**默认 0 = 不限**，一直解锁到「技能点不足」）")
-    p.add_argument("--cycles", type=int, default=0,
-                   help="主循环次数；**0（默认）= 一直循环**（花↔刷往复，靠 F1 停）")
+    p.add_argument("--cycles", type=int, default=1000,
+                   help="主循环次数；**默认 1000（≈一直循环）**，0/负数 = 真无限；靠 F1 停")
     p.add_argument("--farm-first", action="store_true",
                    help="全自动开局先去刷挑战（刷完再回车库花）；默认先花后刷")
     p.add_argument("--live", action="store_true", help="★ 真的按键 ★（不加则只判不按）")

@@ -158,8 +158,8 @@ class Launcher:
         self.var_cars = tk.StringVar(value="0")
         tk.Spinbox(row, from_=0, to=9999, width=6, textvariable=self.var_cars).pack(side="left")
         tk.Label(row, text="   循环次数(0=一直循环)", anchor="w").pack(side="left")
-        self.var_cycles = tk.StringVar(value="0")
-        tk.Spinbox(row, from_=0, to=99, width=4, textvariable=self.var_cycles).pack(side="left")
+        self.var_cycles = tk.StringVar(value="1000")
+        tk.Spinbox(row, from_=0, to=9999, width=5, textvariable=self.var_cycles).pack(side="left")
 
         # 挑战设置（共享代码 / 标称时长）
         row = tk.Frame(frm); row.pack(fill="x", pady=3)
