@@ -3190,9 +3190,15 @@ class Runner:
         for _ in range(int(cfg.code_clear_backspaces)):
             self.press("backspace", "清空输入框")
         self._type_text(cfg.share_code, "输入共享代码")
-        self.press(cfg.confirm_key, "确认代码文本")
-        self.press("down", "移到「确认」")
-        self.sleep(0.35)      # 【2026-10-04】给游戏时间把高亮从输入框挪到「确认」（原来只隔 0.15s，太赶）
+        # 【2026-10-06 修·用户实测"自动进赛事失败"】原来是**连着盲发**：
+        #   回车(确认代码) → ↓(移到确认) → sleep(0.35) → 回车(执行搜索)
+        # 现场日志 run_20261006_230955_live.jsonl + 证据图
+        # enter_fail_entry_still_on_search_panel_20261006_231552.jpg 显示：按键全发出去了，
+        # 但画面停在"共享代码行还选中、确认没选中" —— 游戏**吞了键**（面板还在动画/加载）。
+        # 现在每步都用 _do_step 包住（它会等"画面确实变了"再往下走），把"盲按"变成"看着按"。
+        self._do_step(lambda: self.press(cfg.confirm_key, "确认代码文本"), "确认代码文本")
+        self._do_step(lambda: self.press("down", "移到「确认」"), "高亮移到「确认」")
+        self.sleep(0.35)      # 【2026-10-04】给游戏时间把高亮从输入框挪到「确认」
         self._do_step(lambda: self.press(cfg.confirm_key, "确认（执行搜索）"), "执行搜索")
         # 【2026-10-04 修·用户实测"卡在搜索面板上、程序却说已进入赛事"】
         # `_do_step` 的成功判据只是"画面变了" —— 按方向键/回车都会让高亮框闪一下，画面当然会变，
@@ -3212,7 +3218,17 @@ class Runner:
             if not _gone:
                 return self._enter_fail("search_not_executed")
         # 5) 等结果 → Enter 进挑战 → 等加载
-        self.sleep(1.5 if self.cfg.replay else 2.5)
+        # 【2026-10-06 修·用户实测"自动进赛事失败"】搜索面板消失 ≠ 结果列表已就绪：
+        # 那次日志里 _wait_gone 是**成功**的（面板确实消失过），但结果还在加载就把这个回车按了
+        # 下去 → 游戏把焦点留在搜索输入上、面板又弹回来 → 判 entry_still_on_search_panel。
+        # 原来这里是**固定 sleep 2.5 秒**（盲等：加载慢就白等、快也白等 ✗），
+        # 改成"等画面稳定" = 结果列表真的加载完再按（replay 下没法抓屏，仍用固定等待）。
+        if self.cfg.replay:
+            self.sleep(1.5)
+        else:
+            wait_stable(self.s.capture, stop_event=getattr(self.s.stop, "event", None),
+                        timeout=self.cfg.car_change_timeout, settle=0.6, scale=0.5,
+                        poll=min(0.3, self.cfg.poll))
         self.press(cfg.confirm_key, "进入挑战（结果列表里第一张就是目标赛事）")
         print("  [进赛事] 已按 Enter 进赛事，等加载（实测约 1 分钟）…")
         if not self.cfg.replay:
